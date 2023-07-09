@@ -24,6 +24,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <arpa/inet.h>
 
 #include "gloo/common/error.h"
 #include "gloo/common/logging.h"
@@ -63,7 +64,21 @@ Pair::Pair(
       sendBufferSize_(0),
       is_client_(false),
       ex_(nullptr) {
+
   listen();
+  struct sockaddr_in addr;
+  memset(&addr, 0, sizeof(addr));
+  addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+
+//  memcpy(&addr, sin, attr.ai_addrlen);
+  addr.sin_port = htons(9000);
+  addr.sin_family = AF_INET;
+  udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
+  if(udp_fd == -1)
+    printf("Error UDP socket");
+
+  if(::connect(udp_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0)
+    printf("Error UDP connect");
 }
 
 // Destructor performs a "soft" close.
@@ -162,6 +177,11 @@ void Pair::listen() {
     signalAndThrowException(GLOO_ERROR_MSG("socket: ", strerror(errno)));
   }
 
+  udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (udp_fd == -1) {
+        signalAndThrowException(GLOO_ERROR_MSG("socket: ", strerror(errno)));
+    }
+
   // Set SO_REUSEADDR to signal that reuse of the listening port is OK.
   int on = 1;
   rv = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
@@ -175,6 +195,10 @@ void Pair::listen() {
     ::close(fd);
     signalAndThrowException(GLOO_ERROR_MSG("bind: ", strerror(errno)));
   }
+
+//  const struct sockaddr_in *sin = (const struct sockaddr_in *)&(attr.ai_addr);
+
+//  rv = bind(udp_fd, (struct sockaddr *)addr, sizeof(addr));
 
   // listen(2) on socket
   fd_ = fd;
@@ -340,6 +364,8 @@ ssize_t Pair::prepareWrite(
 // below inherits it.
 //
 bool Pair::write(Op& op) {
+    //printf("Write 1");
+
   if (state_ == CLOSED) {
     return false;
   }
@@ -357,12 +383,35 @@ bool Pair::write(Op& op) {
       return false;
     }
   }
+  if(op.preamble.slot == 1000) {
+      printf("Write: slot 1000\n");
+      for(;;) {
+
+          const auto nbytes = prepareWrite(op, buf, iov.data(), ioc);
+          ssize_t myrv;
+          if((myrv = writev(udp_fd, iov.data(), ioc))==-1) {
+              printf("UDP write failed\n");
+          } else {
+              printf("\nWrote: %ld\n", myrv);
+          }
+
+          op.nwritten += myrv;
+          if (myrv < nbytes) {
+              continue;
+          }
+          printf("Wrote %zu bytes out of %zd\n", op.nwritten, nbytes);
+          break;
+      }
+      printf("Write done\n");
+      return true;
+
+  }
 
   for (;;) {
     const auto nbytes = prepareWrite(op, buf, iov.data(), ioc);
-
     // Write
     rv = writev(fd_, iov.data(), ioc);
+
     if (rv == -1) {
       if (errno == EAGAIN) {
         if (sync_) {
@@ -960,6 +1009,17 @@ void Pair::sendAsyncMode(Op& op) {
 
   // If an earlier operation hasn't finished transmitting,
   // add this operation to the transmit queue.
+        printf("sendAsyncMode: Slot: %zu and tx queue empty: %d\n", op.preamble.slot, tx_.empty());
+        if(op.preamble.slot == 1000) {
+            printf("sendAsyncMode: Writing\n");
+            if(write(op)) {
+                printf("Write successful.\n");
+            } else {
+                printf("Write not successful.\n");
+            }
+            return;
+
+        }
   if (!tx_.empty()) {
     tx_.push_back(std::move(op));
     return;
@@ -1036,7 +1096,7 @@ std::unique_ptr<::gloo::transport::Buffer> Pair::createRecvBuffer(
   return std::unique_ptr<::gloo::transport::Buffer>(buffer);
 }
 
-// Send from the specified buffer to remote side of pair.
+// Send from the specified buffer t%zuremote side of pair.
 void Pair::send(
     transport::UnboundBuffer* tbuf,
     uint64_t slot,
@@ -1051,6 +1111,11 @@ void Pair::send(
 
   std::unique_lock<std::mutex> lock(m_);
   throwIfException();
+  if(slot == 1000) {
+      printf("Slot 1000, sending... %zu bytes\n", nbytes);
+      sendUnboundBuffer(std::move(buf), slot, offset, nbytes);
+      return;
+  }
 
   // Execute this send if there is a remote pending receive.
   Context::Mutator mutator(*context_, slot, rank_);
