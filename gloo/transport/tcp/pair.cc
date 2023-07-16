@@ -356,6 +356,96 @@ ssize_t Pair::prepareWrite(
   return len;
 }
 
+ssize_t Pair::prepareCOAPWrite(
+        Op& op,
+        const NonOwningPtr<UnboundBuffer>& buf,
+        char *dstBuf,
+        struct iovec* iov,
+        int& ioc,
+        COAPPacketHeader &coapPacketHeader) {
+    ssize_t len = 0;
+    ioc = 0;
+
+    // Include preamble if necessary
+//    if (op.nwritten < sizeof(op.preamble)) {
+//        iov[ioc].iov_base = ((char*)&op.preamble) + op.nwritten;
+//        iov[ioc].iov_len = sizeof(op.preamble) - op.nwritten;
+//        len += iov[ioc].iov_len;
+//        ioc++;
+//    }
+//
+//    auto opcode = op.getOpcode();
+//
+//    // Send data to a remote buffer
+//    if (opcode == Op::SEND_BUFFER) {
+//        char* ptr = (char*)op.buf->ptr_;
+//        size_t offset = op.preamble.offset;
+//        size_t nbytes = op.preamble.length;
+//        if (op.nwritten > sizeof(op.preamble)) {
+//            offset += op.nwritten - sizeof(op.preamble);
+//            nbytes -= op.nwritten - sizeof(op.preamble);
+//        }
+//        iov[ioc].iov_base = ptr + offset;
+//        iov[ioc].iov_len = nbytes;
+//        len += iov[ioc].iov_len;
+//        ioc++;
+//        return len;
+//    }
+//
+//    // Send data to a remote unbound buffer
+//    if (opcode == Op::SEND_UNBOUND_BUFFER) {
+//        char* ptr = (char*)buf->ptr;
+//        size_t offset = op.offset;
+//        size_t nbytes = op.nbytes;
+//        if (op.nwritten > sizeof(op.preamble)) {
+//            offset += op.nwritten - sizeof(op.preamble);
+//            nbytes -= op.nwritten - sizeof(op.preamble);
+//        }
+//        iov[ioc].iov_base = ptr + offset;
+//        iov[ioc].iov_len = nbytes;
+//        len += iov[ioc].iov_len;
+//        ioc++;
+//        return len;
+//    }
+
+    coapPacketHeader.version = 1;
+    coapPacketHeader.token_len = 0;
+    coapPacketHeader.code = 0;
+    coapPacketHeader.message_id = 0;
+    coapPacketHeader.options = 0;
+    coapPacketHeader.end_options = 0;
+    coapPacketHeader.collective_id = 0;
+    coapPacketHeader.collective_type = 0;
+    coapPacketHeader.recursion_level = 0;
+    coapPacketHeader.rank = 0;
+    coapPacketHeader.no_of_nodes = 0;
+    coapPacketHeader.operation = 3; //MPI_Op::MPI_SUM;
+    coapPacketHeader.data_type = 0;
+    coapPacketHeader.no_of_elements = 256;
+    coapPacketHeader.distribution_total = 0;
+    coapPacketHeader.distribution_rank = 0;
+    iov[ioc].iov_base = ((char*)&coapPacketHeader) ;
+    iov[ioc].iov_len = sizeof(coapPacketHeader);
+    len += iov[ioc].iov_len;
+    ioc++;
+
+    for(int i = 0; i < coapPacketHeader.no_of_elements; i++) {
+        int16_t int_part = (int16_t)((int32_t *)buf->ptr)[i];
+        ((int16_t *)dstBuf)[2 * i] = int_part;
+        ((int16_t *)dstBuf)[2 * i + 1] = 0;
+
+    }
+    iov[ioc].iov_base = (char*)buf->ptr;
+    iov[ioc].iov_len = op.preamble.length;
+    len += iov[ioc].iov_len;
+    ioc++;
+
+
+
+
+    return len;
+}
+
 // write is called from:
 // 1) the device thread (the handleEvents function)
 // 2) a user thread (the send function)
@@ -386,8 +476,10 @@ bool Pair::write(Op& op) {
   if(op.preamble.slot == 1000) {
       printf("Write: slot 1000\n");
       for(;;) {
-
-          const auto nbytes = prepareWrite(op, buf, iov.data(), ioc);
+          COAPPacketHeader coapPacketHeader;
+          char coapBuffer[4 * 256];
+          memset(coapBuffer, 0, sizeof(coapBuffer));
+          const auto nbytes = prepareCOAPWrite(op, buf, coapBuffer, iov.data(), ioc, coapPacketHeader);
           ssize_t myrv;
           if((myrv = writev(udp_fd, iov.data(), ioc))==-1) {
               printf("UDP write failed\n");
@@ -396,9 +488,9 @@ bool Pair::write(Op& op) {
           }
 
           op.nwritten += myrv;
-          if (myrv < nbytes) {
-              continue;
-          }
+//          if (myrv < nbytes) {
+//              continue;
+//          }
           printf("Wrote %zu bytes out of %zd\n", op.nwritten, nbytes);
           break;
       }

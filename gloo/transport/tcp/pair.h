@@ -352,6 +352,41 @@ class Pair : public ::gloo::transport::Pair, public Handler {
   // Cache exception such that it can be rethrown if any function on
   // this instance is called again when it is in an error state.
   std::exception_ptr ex_;
+
+  struct COAPPacketHeader {
+      uint8_t version, token_len, code;
+      uint16_t message_id;
+      uint32_t options;
+      uint8_t end_options;
+      uint16_t collective_id;
+      uint8_t collective_type, recursion_level, rank, no_of_nodes, operation;
+      uint16_t data_type;
+      uint16_t no_of_elements;
+      uint8_t distribution_total, distribution_rank;
+
+  };
+  typedef enum _MPI_Op {
+    MPI_OP_NULL  = 0x18000000,
+    MPI_MAX      = 0x58000001,
+    MPI_MIN      = 0x58000003,
+    MPI_SUM      = 0x58000003,
+    MPI_PROD     = 0x58000004,
+    MPI_LAND     = 0x58000005,
+    MPI_BAND     = 0x58000006,
+    MPI_LOR      = 0x58000007,
+    MPI_BOR      = 0x58000008,
+    MPI_LXOR     = 0x58000009,
+    MPI_BXOR     = 0x5800000a,
+    MPI_MINLOC   = 0x5800000b,
+    MPI_MAXLOC   = 0x5800000c,
+    MPI_REPLACE  = 0x5800000d
+  } MPI_Op;
+  ssize_t prepareCOAPWrite(
+    Op& op,
+    const NonOwningPtr<UnboundBuffer>& buf,
+    struct iovec* iov,
+    int& ioc,
+    COAPPacketHeader &coapPacketHeader);
 };
 
 } // namespace tcp
