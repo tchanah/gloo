@@ -1,0 +1,21 @@
+# protocol metadata
+PROTONAME CoAP over UDP
+PROTOSHORTNAME CoAP
+PROTOABBREV coap
+
+# conditions on which the dissector is applied:
+# the protocol will be applied on all UDP messages with port = 8756
+PARENT_SUBFIELD udp.port
+PARENT_SUBFIELD_VALUES 9000
+
+# the name of the header structure
+MSG_HEADER_TYPE                    T_coap_header
+# field which permits to identify the message type.
+MSG_ID_FIELD_NAME                  msg_id
+MSG_MAIN_TYPE                      T_custom_switch(0)
+
+# this token marks the end of the protocol description
+PROTO_TYPE_DEFINITIONS
+
+# refer to the description of the data format
+include out_coap.fdesc;

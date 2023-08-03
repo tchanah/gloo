@@ -354,7 +354,7 @@ class Pair : public ::gloo::transport::Pair, public Handler {
   std::exception_ptr ex_;
 
   struct COAPPacketHeader {
-      uint8_t version, token_len, code;
+      uint8_t version_and_token_len, code;
       uint16_t message_id;
       uint32_t options;
       uint8_t end_options;
@@ -384,9 +384,13 @@ class Pair : public ::gloo::transport::Pair, public Handler {
   ssize_t prepareCOAPWrite(
     Op& op,
     const NonOwningPtr<UnboundBuffer>& buf,
+    char *dstBuf,
     struct iovec* iov,
     int& ioc,
     COAPPacketHeader &coapPacketHeader);
+
+    void readUDP(int udp_fd);
+
 };
 
 } // namespace tcp

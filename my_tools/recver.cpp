@@ -7,7 +7,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
    
-#define PORT     9000
+#define PORT     5683
 #define MAXLINE 10240
 
 struct COAPPacketHeader {
@@ -84,8 +84,8 @@ int main() {
                coapPacketHeader->distribution_rank);
 
         printf("Data: \n");
-        for (int i = 0; i < coapPacketHeader->no_of_elements; i++) {
-            printf("%d, ", ((uint32_t *) (buffer + sizeof(COAPPacketHeader)))[i]);
+        for (int i = 0; i < (coapPacketHeader->no_of_elements) * 2; i++) {
+            printf("%d, ", ((uint16_t *) (buffer + sizeof(COAPPacketHeader)))[i]);
 
             //sendto(sockfd, (const char *)hello, strlen(hello),
             //  MSG_CONFIRM, (const struct sockaddr *) &cliaddr,

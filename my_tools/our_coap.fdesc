@@ -1,0 +1,38 @@
+enum8 T_msg_type
+{
+    msg 0
+}
+
+
+struct T_coap_header
+{
+    byte_order big_endian;
+    uint4 ver_type;
+    uint4 token_len;
+    uint8 code;
+    uint16 msg_id;
+    uint16 options;
+    uint16 options2;
+    uint8 end_of_options;
+    uint16 coll_id;
+    uint8 coll_type;
+    uint8 recursion_level;
+    uint8 rank;
+    uint8 no_of_nodes;
+    uint8 op;
+    uint8 data_type;
+    uint16 no_of_elements;
+    uint8 distr_tot;
+    uint8 distr_rank;    
+}
+
+struct T_msg
+{
+    T_custom_header header;
+    uint8[256] data;
+}
+
+switch T_custom_switch T_msg_type
+{
+    case T_msg_type::msg T_msg "";
+}

@@ -68,10 +68,12 @@ Pair::Pair(
   listen();
   struct sockaddr_in addr;
   memset(&addr, 0, sizeof(addr));
-  addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+  const char* env_fpga_host = getenv("FPGA_HOST");
+  printf("FPGA_HOST: %s", env_fpga_host);
+  addr.sin_addr.s_addr = inet_addr(env_fpga_host);
 
 //  memcpy(&addr, sin, attr.ai_addrlen);
-  addr.sin_port = htons(9000);
+  addr.sin_port = htons(5683);
   addr.sin_family = AF_INET;
   udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
   if(udp_fd == -1)
@@ -408,8 +410,7 @@ ssize_t Pair::prepareCOAPWrite(
 //        return len;
 //    }
 
-    coapPacketHeader.version = 1;
-    coapPacketHeader.token_len = 0;
+    coapPacketHeader.version_and_token_len = 16; // 00010000
     coapPacketHeader.code = 0;
     coapPacketHeader.message_id = 0;
     coapPacketHeader.options = 0;
@@ -435,8 +436,8 @@ ssize_t Pair::prepareCOAPWrite(
         ((int16_t *)dstBuf)[2 * i + 1] = 0;
 
     }
-    iov[ioc].iov_base = (char*)buf->ptr;
-    iov[ioc].iov_len = op.preamble.length;
+    iov[ioc].iov_base = (char*)dstBuf;
+    iov[ioc].iov_len = sizeof(int32_t) * coapPacketHeader.no_of_elements;
     len += iov[ioc].iov_len;
     ioc++;
 
@@ -495,6 +496,9 @@ bool Pair::write(Op& op) {
           break;
       }
       printf("Write done\n");
+      printf("Reading...\n");
+      readUDP(udp_fd);
+      printf("\nRead done\n");
       return true;
 
   }
@@ -560,6 +564,32 @@ bool Pair::write(Op& op) {
 
   writeComplete(op, buf, opcode);
   return true;
+}
+
+void Pair::readUDP(int udp_fd) {
+#define MAXLINE 10240
+    char buffer[MAXLINE];
+
+    struct sockaddr_in cliaddr;
+    memset(&cliaddr, 0, sizeof(cliaddr));
+    socklen_t len;
+    int n;
+
+    len = sizeof(cliaddr);  //len is value/result
+
+    while((n = recvfrom(udp_fd, (char *)buffer, MAXLINE,
+                        MSG_WAITALL, ( struct sockaddr *) &cliaddr,
+                        &len)) > 0) {
+        //buffer[n] = '\0';
+        printf("Read : %d\n", n);
+        if(n < 0) {
+            printf("\n%s\n", strerror(errno));
+        }
+        for (int i = 0; i < n / sizeof(int); i++) {
+            printf("%d, ", ((int *) buffer)[i]);
+        }
+        printf("\n");
+    }
 }
 
 void Pair::writeComplete(const Op &op, NonOwningPtr<UnboundBuffer> &buf,
