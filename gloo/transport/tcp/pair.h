@@ -354,17 +354,24 @@ class Pair : public ::gloo::transport::Pair, public Handler {
   std::exception_ptr ex_;
 
   struct COAPPacketHeader {
-      uint8_t version_and_token_len, code;
+      uint8_t version_and_token_len;
+      uint8_t code;
       uint16_t message_id;
       uint32_t options;
       uint8_t end_options;
       uint16_t collective_id;
-      uint8_t collective_type, recursion_level, rank, no_of_nodes, operation;
+      uint8_t collective_type;
+      uint8_t recursion_level;
+      uint8_t rank;
+      uint8_t no_of_nodes;
+      uint8_t operation;
       uint16_t data_type;
       uint16_t no_of_elements;
-      uint8_t distribution_total, distribution_rank;
+      uint8_t distribution_total;
+      uint8_t distribution_rank;
 
-  };
+  }__attribute__((packed));
+
   typedef enum _MPI_Op {
     MPI_OP_NULL  = 0x18000000,
     MPI_MAX      = 0x58000001,
@@ -388,6 +395,10 @@ class Pair : public ::gloo::transport::Pair, public Handler {
     struct iovec* iov,
     int& ioc,
     COAPPacketHeader &coapPacketHeader);
+
+  void cOAPPacketToNetworkByteOrder(
+          COAPPacketHeader &coapPacketHeader
+          );
 
     void readUDP(int udp_fd);
 

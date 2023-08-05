@@ -411,20 +411,21 @@ ssize_t Pair::prepareCOAPWrite(
 //    }
 
     coapPacketHeader.version_and_token_len = 16; // 00010000
-    coapPacketHeader.code = 0;
-    coapPacketHeader.message_id = 0;
-    coapPacketHeader.options = 0;
-    coapPacketHeader.end_options = 0;
-    coapPacketHeader.collective_id = 0;
-    coapPacketHeader.collective_type = 0;
-    coapPacketHeader.recursion_level = 0;
-    coapPacketHeader.rank = 0;
-    coapPacketHeader.no_of_nodes = 0;
+    coapPacketHeader.code = 1;
+    coapPacketHeader.message_id = 2;
+    coapPacketHeader.options = 3;
+    coapPacketHeader.end_options = 4;
+    coapPacketHeader.collective_id = 5;
+    coapPacketHeader.collective_type = 6;
+    coapPacketHeader.recursion_level = 7;
+    coapPacketHeader.rank = 8;
+    coapPacketHeader.no_of_nodes = 9;
     coapPacketHeader.operation = 3; //MPI_Op::MPI_SUM;
-    coapPacketHeader.data_type = 0;
+    coapPacketHeader.data_type = 10;
     coapPacketHeader.no_of_elements = 256;
-    coapPacketHeader.distribution_total = 0;
-    coapPacketHeader.distribution_rank = 0;
+    coapPacketHeader.distribution_total = 11;
+    coapPacketHeader.distribution_rank = 12;
+    cOAPPacketToNetworkByteOrder(coapPacketHeader);
     iov[ioc].iov_base = ((char*)&coapPacketHeader) ;
     iov[ioc].iov_len = sizeof(coapPacketHeader);
     len += iov[ioc].iov_len;
@@ -432,12 +433,12 @@ ssize_t Pair::prepareCOAPWrite(
 
     for(int i = 0; i < coapPacketHeader.no_of_elements; i++) {
         int16_t int_part = (int16_t)((int32_t *)buf->ptr)[i];
-        ((int16_t *)dstBuf)[2 * i] = int_part;
+        ((int16_t *)dstBuf)[2 * i] = htons(int_part);
         ((int16_t *)dstBuf)[2 * i + 1] = 0;
 
     }
     iov[ioc].iov_base = (char*)dstBuf;
-    iov[ioc].iov_len = sizeof(int32_t) * coapPacketHeader.no_of_elements;
+    iov[ioc].iov_len = sizeof(int32_t) * 256;
     len += iov[ioc].iov_len;
     ioc++;
 
@@ -445,6 +446,17 @@ ssize_t Pair::prepareCOAPWrite(
 
 
     return len;
+}
+
+    void Pair::cOAPPacketToNetworkByteOrder(
+            COAPPacketHeader &coapPacketHeader
+    ) {
+    coapPacketHeader.message_id = htons(coapPacketHeader.message_id);
+    coapPacketHeader.options = htonl(coapPacketHeader.options);
+    coapPacketHeader.collective_id = htons(coapPacketHeader.collective_id);
+    coapPacketHeader.data_type = htons(coapPacketHeader.data_type);
+    coapPacketHeader.no_of_elements = htons(coapPacketHeader.no_of_elements);
+
 }
 
 // write is called from:

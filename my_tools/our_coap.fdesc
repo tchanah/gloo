@@ -1,10 +1,10 @@
-enum8 T_msg_type
+enum8 T_our_msg_type
 {
     msg 0
 }
 
 
-struct T_coap_header
+struct T_our_coap_header
 {
     byte_order big_endian;
     uint4 ver_type;
@@ -20,19 +20,19 @@ struct T_coap_header
     uint8 rank;
     uint8 no_of_nodes;
     uint8 op;
-    uint8 data_type;
+    uint16 data_type;
     uint16 no_of_elements;
     uint8 distr_tot;
     uint8 distr_rank;    
 }
 
-struct T_msg
+struct T_our_msg
 {
-    T_custom_header header;
-    uint8[256] data;
+    T_our_coap_header header;
+    int16[512] data;
 }
 
-switch T_custom_switch T_msg_type
+switch T_custom_switch # T_our_msg_type
 {
-    case T_msg_type::msg T_msg "";
+    default :  T_our_msg "";
 }
