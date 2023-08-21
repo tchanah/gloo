@@ -25,6 +25,7 @@ constexpr int64_t HOSTNAME_MAX_SIZE = 256;
 
 Context::Context(int rank, int size, int base)
     : ::gloo::Context(rank, size, base) {
+      printf("DEBUG: Created context\n");
 }
 
 Context::~Context() {
@@ -45,7 +46,7 @@ void Context::connectFullMesh(
     std::shared_ptr<transport::Device>& dev) {
   std::vector<char> allBytes;
   int localRank = 0;
-
+  printf("DEBUG: Connect Full Mesh\n");
   // Get Hostname using syscall
   char hostname[HOSTNAME_MAX_SIZE]; // NOLINT
   int rv = gethostname(hostname, HOSTNAME_MAX_SIZE);

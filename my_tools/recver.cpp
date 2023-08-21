@@ -69,6 +69,9 @@ int main() {
         }
         printf("\n");
         printf("Parsing...\n");
+        n = sendto(sockfd, (char *) buffer, n, 0, (struct sockaddr *) &cliaddr, len);
+        if(n < 0)
+          perror("Send failed\n");
         const COAPPacketHeader *coapPacketHeader = (COAPPacketHeader *) buffer;
         printf("Header: \nVer: %d\nToken len: %d\nCode: %d\nMessageID:%d\nOptions:%d\nEnd of options:%d\n"
                "Collective ID: %d\nCollective type: %d\nLevel of recursion:%d\nRank: %d\n"
