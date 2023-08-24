@@ -142,6 +142,8 @@ class AllreduceOptions {
 
   template <typename T>
   void setOutputs(std::vector<std::unique_ptr<transport::UnboundBuffer>> bufs) {
+    printf("DEBUG: Output 4\n");
+
     impl_.elements = bufs[0]->size / sizeof(T);
     impl_.elementSize = sizeof(T);
     impl_.out = std::move(bufs);
@@ -149,16 +151,19 @@ class AllreduceOptions {
 
   template <typename T>
   void setOutput(T* ptr, size_t elements) {
+    printf("DEBUG: Output 3\n");
     setOutputs(&ptr, 1, elements);
   }
 
   template <typename T>
   void setOutputs(std::vector<T*> ptrs, size_t elements) {
+    printf("DEBUG: Output 1\n");
     setOutputs(ptrs.data(), ptrs.size(), elements);
   }
 
   template <typename T>
   void setOutputs(T** ptrs, size_t len, size_t elements) {
+    printf("DEBUG: Output 2\n");
     impl_.elements = elements;
     impl_.elementSize = sizeof(T);
     impl_.out.reserve(len);

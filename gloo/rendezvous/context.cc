@@ -77,7 +77,7 @@ void Context::connectFullMesh(
   }
 
   // Create pairs
-  auto transportContext = dev->createContext(rank, size);
+  auto transportContext = dev->createContext(rank, 0);
   transportContext->setTimeout(getTimeout());
   for (int i = 0; i < size; i++) {
     if (i == rank) {

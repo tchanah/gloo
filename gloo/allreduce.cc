@@ -98,7 +98,7 @@ void allreduce(const detail::AllreduceOptionsImpl& opts) {
   if (opts.elements == 0) {
     return;
   }
-
+  printf("DEBUG:1\n");
   const auto& context = opts.context;
   const std::vector<std::unique_ptr<transport::UnboundBuffer>>& in = opts.in;
   const std::vector<std::unique_ptr<transport::UnboundBuffer>>& out = opts.out;
@@ -108,6 +108,7 @@ void allreduce(const detail::AllreduceOptionsImpl& opts) {
   GLOO_ENFORCE_GT(out.size(), 0);
   GLOO_ENFORCE(opts.elementSize > 0);
   GLOO_ENFORCE(opts.reduce != nullptr);
+  printf("DEBUG:2\n");
 
   // Assert the size of all inputs and outputs is identical.
   const size_t totalBytes = opts.elements * opts.elementSize;
@@ -117,6 +118,7 @@ void allreduce(const detail::AllreduceOptionsImpl& opts) {
   for (size_t i = 0; i < in.size(); i++) {
     GLOO_ENFORCE_EQ(in[i]->size, totalBytes);
   }
+  printf("DEBUG:3\n");
 
   // Initialize local reduction and broadcast functions.
   // Note that these are a no-op if only a single output is specified
