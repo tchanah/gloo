@@ -165,9 +165,9 @@ class Pair : public ::gloo::transport::Pair, public Handler {
   // When set, instructs pair to use busy-polling on receive.
   // Can only be used with sync receive mode.
   bool busyPoll_;
-  int fd_, udp_fd;
+  int fd_;
   size_t sendBufferSize_;
-
+  static int udp_fd;
   Address self_;
   Address peer_;
   bool is_client_;
@@ -400,7 +400,7 @@ class Pair : public ::gloo::transport::Pair, public Handler {
           COAPPacketHeader &coapPacketHeader
           );
 
-    void readUDP(int udp_fd);
+    void readUDP();
 
 };
 

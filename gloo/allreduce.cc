@@ -174,6 +174,7 @@ void ring(
     printf("Initiating UDP send\n");
   out[0]->send(sendRank, 1000   , 0, std::numeric_limits<size_t>::max());
     printf("Done UDP send\n");
+    return;
 
 
     // The ring algorithm works as follows.

@@ -48,6 +48,8 @@ constexpr size_t kMaxRecvBufferSize = 32 * 1024 * 1024;
 
 } // namespace
 
+int Pair::udp_fd = 0;
+
 Pair::Pair(
     Context* context,
     Device* device,
@@ -66,21 +68,41 @@ Pair::Pair(
       ex_(nullptr) {
 
   listen();
-  struct sockaddr_in addr;
-  memset(&addr, 0, sizeof(addr));
-  const char* env_fpga_host = getenv("FPGA_HOST");
-  printf("FPGA_HOST: %s", env_fpga_host);
-  addr.sin_addr.s_addr = inet_addr(env_fpga_host);
+  printf("Pre UDP fd: %d", udp_fd);
+  if(udp_fd == 0) {
+    struct sockaddr_in addr, srvAddr, sockInfo;
+    memset(&addr, 0, sizeof(addr));
+    const char *env_fpga_host = getenv("FPGA_HOST");
+    printf("FPGA_HOST: %s\n", env_fpga_host);
+    addr.sin_addr.s_addr = inet_addr(env_fpga_host);
 
 //  memcpy(&addr, sin, attr.ai_addrlen);
-  addr.sin_port = htons(5683);
-  addr.sin_family = AF_INET;
-  udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
-  if(udp_fd == -1)
-    printf("Error UDP socket");
+    addr.sin_port = htons(5683);
+    addr.sin_family = AF_INET;
+    udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (udp_fd == -1)
+      printf("Error UDP socket");
+    int disable = 1;
+    if (setsockopt(udp_fd, SOL_SOCKET, SO_NO_CHECK, (void*)&disable, sizeof(disable)) < 0) {
+      perror("setsockopt failed");
+    }
 
-  if(::connect(udp_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0)
-    printf("Error UDP connect");
+    srvAddr.sin_family = AF_INET;
+//  srvAddr.sin_port = htons(5683);
+    srvAddr.sin_addr.s_addr = INADDR_ANY;
+    if (bind(udp_fd, (struct sockaddr *) &srvAddr, sizeof(srvAddr)) < 0)
+      perror("UDP bind failed\n");
+    if (::connect(udp_fd, (struct sockaddr *) &addr, sizeof(addr)) < 0) {
+      perror("Error UDP connect");
+    }
+    bzero(&sockInfo, sizeof(sockInfo));
+    socklen_t len = sizeof(sockInfo);
+    getsockname(udp_fd, (struct sockaddr *) &sockInfo, &len);
+    printf("UDP bound to port: %d\n", ntohs(sockInfo.sin_port));
+    if (setsockopt(udp_fd, SOL_SOCKET, SO_NO_CHECK, (void*)&disable, sizeof(disable)) < 0) {
+      perror("setsockopt failed");
+    }
+  }
 }
 
 // Destructor performs a "soft" close.
@@ -179,10 +201,10 @@ void Pair::listen() {
     signalAndThrowException(GLOO_ERROR_MSG("socket: ", strerror(errno)));
   }
 
-  udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (udp_fd == -1) {
-        signalAndThrowException(GLOO_ERROR_MSG("socket: ", strerror(errno)));
-    }
+  // udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
+  //   if (udp_fd == -1) {
+  //       signalAndThrowException(GLOO_ERROR_MSG("socket: ", strerror(errno)));
+  //   }
 
   // Set SO_REUSEADDR to signal that reuse of the listening port is OK.
   int on = 1;
@@ -414,7 +436,7 @@ ssize_t Pair::prepareCOAPWrite(
     coapPacketHeader.code = 0;
     coapPacketHeader.message_id = 0;
     coapPacketHeader.options = 0;
-    coapPacketHeader.end_options = 0;
+    coapPacketHeader.end_options = 255;
     coapPacketHeader.collective_id = 0;
     coapPacketHeader.collective_type = 0;
     coapPacketHeader.recursion_level = 0;
@@ -433,7 +455,7 @@ ssize_t Pair::prepareCOAPWrite(
 
     for(int i = 0; i < no_of_elements; i++) {
         int16_t int_part = (int16_t)((int32_t *)buf->ptr)[i];
-        ((uint16_t *)dstBuf)[2 * i] = htons((int_part));
+        ((uint16_t *)dstBuf)[2 * i] = int_part;
         ((uint16_t *)dstBuf)[2 * i + 1] = 0;
 
     }
@@ -509,7 +531,7 @@ bool Pair::write(Op& op) {
       }
       printf("Write done\n");
       printf("Reading...\n");
-      readUDP(udp_fd);
+      readUDP();
       printf("\nRead done\n");
       return true;
 
@@ -578,22 +600,22 @@ bool Pair::write(Op& op) {
   return true;
 }
 
-void Pair::readUDP(int udp_fd) {
-#define MAXLINE 10240
+void Pair::readUDP() {
+#define MAXLINE 1046
     char buffer[MAXLINE];
 
     struct sockaddr_in cliaddr;
     memset(&cliaddr, 0, sizeof(cliaddr));
     socklen_t len;
-    int n;
+    size_t n;
 
     len = sizeof(cliaddr);  //len is value/result
 
-    while((n = recvfrom(udp_fd, (char *)buffer, MAXLINE,
+    n = recvfrom(udp_fd, (char *)buffer, MAXLINE,
                         MSG_WAITALL, ( struct sockaddr *) &cliaddr,
-                        &len)) > 0) {
+                        &len);
         //buffer[n] = '\0';
-        printf("Read : %d\n", n);
+        printf("Read : %zu\n", n);
         if(n < 0) {
             printf("\n%s\n", strerror(errno));
         }
@@ -601,7 +623,7 @@ void Pair::readUDP(int udp_fd) {
             printf("%d, ", ((int *) buffer)[i]);
         }
         printf("\n");
-    }
+    
 }
 
 void Pair::writeComplete(const Op &op, NonOwningPtr<UnboundBuffer> &buf,
