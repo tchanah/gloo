@@ -35,362 +35,438 @@
 #define FD_INVALID (-1)
 
 namespace gloo {
-namespace transport {
-namespace tcp {
+  namespace transport {
+    namespace tcp {
 
-namespace {
+      namespace {
 
 // This reflects an approximation of /proc/sys/net/core/{r,w}mem_max.
 // It is hard coded because making buffers larger than this would not
 // have much impact. Also see socket(7).
-constexpr size_t kMaxSendBufferSize = 32 * 1024 * 1024;
-constexpr size_t kMaxRecvBufferSize = 32 * 1024 * 1024;
+        constexpr size_t kMaxSendBufferSize = 32 * 1024 * 1024;
+        constexpr size_t kMaxRecvBufferSize = 32 * 1024 * 1024;
 
-} // namespace
+      } // namespace
 
-int Pair::udp_fd = 0;
+      int Pair::udp_fd = 0;
+      int Pair::sync_udp_fd = 0;
+#define UDP_SYNC_PORT 8000
 
-Pair::Pair(
-    Context* context,
-    Device* device,
-    int rank,
-    std::chrono::milliseconds timeout)
-    : context_(context),
-      device_(device),
-      rank_(rank),
-      state_(INITIALIZING),
-      sync_(false),
-      timeout_(timeout),
-      busyPoll_(false),
-      fd_(FD_INVALID),
-      sendBufferSize_(0),
-      is_client_(false),
-      ex_(nullptr) {
+      Pair::Pair(
+          Context *context,
+          Device *device,
+          int rank,
+          std::chrono::milliseconds timeout)
+          : context_(context),
+            device_(device),
+            rank_(rank),
+            state_(INITIALIZING),
+            sync_(false),
+            timeout_(timeout),
+            busyPoll_(false),
+            fd_(FD_INVALID),
+            sendBufferSize_(0),
+            is_client_(false),
+            ex_(nullptr) {
 
-  listen();
-  printf("Pre UDP fd: %d", udp_fd);
-  if(udp_fd == 0) {
-    struct sockaddr_in addr, srvAddr, sockInfo;
-    memset(&addr, 0, sizeof(addr));
-    const char *env_fpga_host = getenv("FPGA_HOST");
-    printf("FPGA_HOST: %s\n", env_fpga_host);
-    addr.sin_addr.s_addr = inet_addr(env_fpga_host);
+        listen();
+        printf("Pre UDP fd: %d", udp_fd);
+        if (udp_fd == 0) {
+          struct sockaddr_in addr, srvAddr, sockInfo;
+          memset(&addr, 0, sizeof(addr));
+          const char *env_fpga_host = getenv("FPGA_HOST");
+          printf("FPGA_HOST: %s\n", env_fpga_host);
+          addr.sin_addr.s_addr = inet_addr(env_fpga_host);
 
 //  memcpy(&addr, sin, attr.ai_addrlen);
-    addr.sin_port = htons(5683);
-    addr.sin_family = AF_INET;
-    udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (udp_fd == -1)
-      printf("Error UDP socket");
-    int disable = 1;
-    if (setsockopt(udp_fd, SOL_SOCKET, SO_NO_CHECK, (void*)&disable, sizeof(disable)) < 0) {
-      perror("setsockopt failed");
-    }
+          addr.sin_port = htons(5683);
+          addr.sin_family = AF_INET;
+          udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
+          if (udp_fd == -1)
+            printf("Error UDP socket");
+          int disable = 1;
+          if (setsockopt(udp_fd, SOL_SOCKET, SO_NO_CHECK, (void *) &disable, sizeof(disable)) < 0) {
+            perror("setsockopt failed");
+          }
 
-    srvAddr.sin_family = AF_INET;
-//  srvAddr.sin_port = htons(5683);
-    srvAddr.sin_addr.s_addr = INADDR_ANY;
-    if (bind(udp_fd, (struct sockaddr *) &srvAddr, sizeof(srvAddr)) < 0)
-      perror("UDP bind failed\n");
-    if (::connect(udp_fd, (struct sockaddr *) &addr, sizeof(addr)) < 0) {
-      perror("Error UDP connect");
-    }
-    bzero(&sockInfo, sizeof(sockInfo));
-    socklen_t len = sizeof(sockInfo);
-    getsockname(udp_fd, (struct sockaddr *) &sockInfo, &len);
-    printf("UDP bound to port: %d\n", ntohs(sockInfo.sin_port));
-    if (setsockopt(udp_fd, SOL_SOCKET, SO_NO_CHECK, (void*)&disable, sizeof(disable)) < 0) {
-      perror("setsockopt failed");
-    }
-  }
-}
+          srvAddr.sin_family = AF_INET;
+//          int _rank = atoi(getenv("RANK"));
+//          printf("Trying UDP port: %d\n", UDP_SYNC_PORT + _rank);
+//          srvAddr.sin_port = htons(UDP_SYNC_PORT + _rank);
+          srvAddr.sin_addr.s_addr = INADDR_ANY;
+          if (bind(udp_fd, (struct sockaddr *) &srvAddr, sizeof(srvAddr)) < 0)
+            perror("UDP bind failed\n");
+          if (::connect(udp_fd, (struct sockaddr *) &addr, sizeof(addr)) < 0) {
+            perror("Error UDP connect");
+          }
+          bzero(&sockInfo, sizeof(sockInfo));
+          socklen_t len = sizeof(sockInfo);
+          getsockname(udp_fd, (struct sockaddr *) &sockInfo, &len);
+          printf("UDP bound to port: %d\n", ntohs(sockInfo.sin_port));
+          if (setsockopt(udp_fd, SOL_SOCKET, SO_NO_CHECK, (void *) &disable, sizeof(disable)) < 0) {
+            perror("setsockopt failed");
+          }
+
+          if(atoi(getenv("RANK")) == 0){
+            struct sockaddr_in srvAddrSync, sockInfoSync;
+            sync_udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
+            if (sync_udp_fd == -1)
+              printf("Error SYNC UDP socket");
+            srvAddr.sin_family = AF_INET;
+            printf("Trying SYNC UDP port: %d\n", UDP_SYNC_PORT);
+            srvAddr.sin_port = htons(UDP_SYNC_PORT);
+            srvAddr.sin_addr.s_addr = INADDR_ANY;
+            if (bind(sync_udp_fd, (struct sockaddr *) &srvAddr, sizeof(srvAddr)) < 0)
+              perror("SYNC UDP bind failed\n");
+            bzero(&sockInfo, sizeof(sockInfo));
+            len = sizeof(sockInfo);
+            getsockname(sync_udp_fd, (struct sockaddr *) &sockInfo, &len);
+            printf("SYNC UDP bound to port: %d\n", ntohs(sockInfo.sin_port));
+          }
+        }
+      }
 
 // Destructor performs a "soft" close.
-Pair::~Pair() {
-  // Needs lock so that this doesn't race with read/write of the
-  // underlying file descriptor on the device thread.
-  std::lock_guard<std::mutex> lock(m_);
-  if (state_ != CLOSED) {
-    Pair::changeState(CLOSED);
-  }
-}
+      Pair::~Pair() {
+        // Needs lock so that this doesn't race with read/write of the
+        // underlying file descriptor on the device thread.
+        std::lock_guard<std::mutex> lock(m_);
+        if (state_ != CLOSED) {
+          Pair::changeState(CLOSED);
+        }
+      }
 
 // The close function performs a "hard" close.
 // It sets SO_LINGER to reset the connection on close,
 // in order to avoid sockets hanging around in TIME_WAIT.
-void Pair::close() {
-  // Needs lock so that this doesn't race with read/write of the
-  // underlying file descriptor on the device thread.
-  std::lock_guard<std::mutex> lock(m_);
-  if (state_ != CLOSED) {
-    if (fd_ != FD_INVALID) {
-      struct linger sl;
-      sl.l_onoff = 1;
-      sl.l_linger = 0;
-      setsockopt(fd_, SOL_SOCKET, SO_LINGER, &sl, sizeof(sl));
-    }
-    changeState(CLOSED);
-  }
-}
-
-const Address& Pair::address() const {
-  return self_;
-}
-
-void Pair::connect(const std::vector<char>& bytes) {
-  auto peer = Address(bytes);
-  connect(peer);
-}
-
-static void setSocketBlocking(int fd, bool enable) {
-  auto rv = fcntl(fd, F_GETFL);
-  GLOO_ENFORCE_NE(rv, -1);
-  if (enable) {
-    rv &= ~O_NONBLOCK;
-  } else {
-    rv |= O_NONBLOCK;
-  }
-  rv = fcntl(fd, F_SETFL, rv);
-  GLOO_ENFORCE_NE(rv, -1);
-}
-
-void Pair::setSync(bool sync, bool busyPoll) {
-  std::unique_lock<std::mutex> lock(m_);
-
-  if (!sync) {
-    GLOO_THROW_INVALID_OPERATION_EXCEPTION("Can only switch to sync mode");
-  }
-
-  // Wait for pair to be connected. No need to wait for timeout here. If
-  // necessary, the connect path will timeout and signal this thread.
-  waitUntilConnected(lock, false);
-  if (state_ == CLOSED) {
-    signalAndThrowException(
-        GLOO_ERROR_MSG("Socket unexpectedly closed ", peer_.str()));
-  }
-
-  if (!sync_) {
-    // If async, unregister from loop and switch socket to blocking mode
-    device_->unregisterDescriptor(fd_, this);
-    setSocketBlocking(fd_, true);
-
-    // If the pair was still flushing writes, finish them.
-    for (auto& op : tx_) {
-      auto rv = write(op);
-      if (!rv) {
-        GLOO_ENFORCE(
-            ex_ != nullptr,
-            "write() returned false in sync mode; ex_ must be set");
-        std::rethrow_exception(ex_);
+      void Pair::close() {
+        // Needs lock so that this doesn't race with read/write of the
+        // underlying file descriptor on the device thread.
+        std::lock_guard<std::mutex> lock(m_);
+        if (state_ != CLOSED) {
+          if (fd_ != FD_INVALID) {
+            struct linger sl;
+            sl.l_onoff = 1;
+            sl.l_linger = 0;
+            setsockopt(fd_, SOL_SOCKET, SO_LINGER, &sl, sizeof(sl));
+          }
+          changeState(CLOSED);
+        }
       }
-    }
-    tx_.clear();
-  }
 
-  sync_ = true;
-  busyPoll_ = busyPoll;
-}
+      const Address &Pair::address() const {
+        return self_;
+      }
 
-void Pair::listen() {
-  std::lock_guard<std::mutex> lock(m_);
-  int rv;
+      void Pair::connect(const std::vector<char> &bytes) {
+        auto peer = Address(bytes);
+        connect(peer);
+      }
 
-  const auto& attr = device_->attr_;
-  auto fd = socket(attr.ai_family, attr.ai_socktype, attr.ai_protocol);
-  if (fd == -1) {
-    signalAndThrowException(GLOO_ERROR_MSG("socket: ", strerror(errno)));
-  }
+      static void setSocketBlocking(int fd, bool enable) {
+        auto rv = fcntl(fd, F_GETFL);
+        GLOO_ENFORCE_NE(rv, -1);
+        if (enable) {
+          rv &= ~O_NONBLOCK;
+        } else {
+          rv |= O_NONBLOCK;
+        }
+        rv = fcntl(fd, F_SETFL, rv);
+        GLOO_ENFORCE_NE(rv, -1);
+      }
 
-  // udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
-  //   if (udp_fd == -1) {
-  //       signalAndThrowException(GLOO_ERROR_MSG("socket: ", strerror(errno)));
-  //   }
+      void Pair::setSync(bool sync, bool busyPoll) {
+        std::unique_lock<std::mutex> lock(m_);
 
-  // Set SO_REUSEADDR to signal that reuse of the listening port is OK.
-  int on = 1;
-  rv = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
-  if (rv == -1) {
-    ::close(fd);
-    signalAndThrowException(GLOO_ERROR_MSG("setsockopt: ", strerror(errno)));
-  }
+        if (!sync) {
+          GLOO_THROW_INVALID_OPERATION_EXCEPTION("Can only switch to sync mode");
+        }
 
-  rv = bind(fd, (const sockaddr*)&attr.ai_addr, attr.ai_addrlen);
-  if (rv == -1) {
-    ::close(fd);
-    signalAndThrowException(GLOO_ERROR_MSG("bind: ", strerror(errno)));
-  }
+        // Wait for pair to be connected. No need to wait for timeout here. If
+        // necessary, the connect path will timeout and signal this thread.
+        waitUntilConnected(lock, false);
+        if (state_ == CLOSED) {
+          signalAndThrowException(
+              GLOO_ERROR_MSG("Socket unexpectedly closed ", peer_.str()));
+        }
+
+        if (!sync_) {
+          // If async, unregister from loop and switch socket to blocking mode
+          device_->unregisterDescriptor(fd_, this);
+          setSocketBlocking(fd_, true);
+
+          // If the pair was still flushing writes, finish them.
+          for (auto &op: tx_) {
+            auto rv = write(op);
+            if (!rv) {
+              GLOO_ENFORCE(
+                  ex_ != nullptr,
+                  "write() returned false in sync mode; ex_ must be set");
+              std::rethrow_exception(ex_);
+            }
+          }
+          tx_.clear();
+        }
+
+        sync_ = true;
+        busyPoll_ = busyPoll;
+      }
+
+      void Pair::listen() {
+        std::lock_guard<std::mutex> lock(m_);
+        int rv;
+
+        const auto &attr = device_->attr_;
+        auto fd = socket(attr.ai_family, attr.ai_socktype, attr.ai_protocol);
+        if (fd == -1) {
+          signalAndThrowException(GLOO_ERROR_MSG("socket: ", strerror(errno)));
+        }
+
+        // udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
+        //   if (udp_fd == -1) {
+        //       signalAndThrowException(GLOO_ERROR_MSG("socket: ", strerror(errno)));
+        //   }
+
+        // Set SO_REUSEADDR to signal that reuse of the listening port is OK.
+        int on = 1;
+        rv = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+        if (rv == -1) {
+          ::close(fd);
+          signalAndThrowException(GLOO_ERROR_MSG("setsockopt: ", strerror(errno)));
+        }
+
+        rv = bind(fd, (const sockaddr *) &attr.ai_addr, attr.ai_addrlen);
+        if (rv == -1) {
+          ::close(fd);
+          signalAndThrowException(GLOO_ERROR_MSG("bind: ", strerror(errno)));
+        }
 
 //  const struct sockaddr_in *sin = (const struct sockaddr_in *)&(attr.ai_addr);
 
 //  rv = bind(udp_fd, (struct sockaddr *)addr, sizeof(addr));
 
-  // listen(2) on socket
-  fd_ = fd;
-  rv = ::listen(fd_, 1);
-  if (rv == -1) {
-    ::close(fd_);
-    fd_ = FD_INVALID;
-    signalAndThrowException(GLOO_ERROR_MSG("listen: ", strerror(errno)));
-  }
+        // listen(2) on socket
+        fd_ = fd;
+        rv = ::listen(fd_, 1);
+        if (rv == -1) {
+          ::close(fd_);
+          fd_ = FD_INVALID;
+          signalAndThrowException(GLOO_ERROR_MSG("listen: ", strerror(errno)));
+        }
 
-  // Keep copy of address
-  self_ = Address::fromSockName(fd);
+        // Keep copy of address
+        self_ = Address::fromSockName(fd);
 
-  // Register with device so we're called when peer connects
-  changeState(LISTENING);
-  device_->registerDescriptor(fd_, EPOLLIN, this);
+        // Register with device so we're called when peer connects
+        changeState(LISTENING);
+        device_->registerDescriptor(fd_, EPOLLIN, this);
 
-  return;
-}
+        return;
+      }
 
-void Pair::connect(const Address& peer) {
-  std::unique_lock<std::mutex> lock(m_);
-  int rv;
-  socklen_t addrlen;
-  throwIfException();
+      void Pair::connect(const Address &peer) {
+        std::unique_lock<std::mutex> lock(m_);
+        int rv;
+        socklen_t addrlen;
+        throwIfException();
 
-  peer_ = peer;
+        peer_ = peer;
 
-  const auto& selfAddr = self_.getSockaddr();
-  const auto& peerAddr = peer_.getSockaddr();
+        const auto &selfAddr = self_.getSockaddr();
+        const auto &peerAddr = peer_.getSockaddr();
 
-  // Addresses have to have same family
-  if (selfAddr.ss_family != peerAddr.ss_family) {
-    GLOO_THROW_INVALID_OPERATION_EXCEPTION("address family mismatch");
-  }
+        // Addresses have to have same family
+        if (selfAddr.ss_family != peerAddr.ss_family) {
+          GLOO_THROW_INVALID_OPERATION_EXCEPTION("address family mismatch");
+        }
 
-  if (selfAddr.ss_family == AF_INET) {
-    struct sockaddr_in* sa = (struct sockaddr_in*)&selfAddr;
-    struct sockaddr_in* sb = (struct sockaddr_in*)&peerAddr;
-    addrlen = sizeof(struct sockaddr_in);
-    rv = memcmp(&sa->sin_addr, &sb->sin_addr, sizeof(struct in_addr));
-    if (rv == 0) {
-      rv = sa->sin_port - sb->sin_port;
-    }
-  } else if (peerAddr.ss_family == AF_INET6) {
-    struct sockaddr_in6* sa = (struct sockaddr_in6*)&selfAddr;
-    struct sockaddr_in6* sb = (struct sockaddr_in6*)&peerAddr;
-    addrlen = sizeof(struct sockaddr_in6);
-    rv = memcmp(&sa->sin6_addr, &sb->sin6_addr, sizeof(struct in6_addr));
-    if (rv == 0) {
-      rv = sa->sin6_port - sb->sin6_port;
-    }
-  } else {
-    GLOO_THROW_INVALID_OPERATION_EXCEPTION("unknown sa_family");
-  }
+        if (selfAddr.ss_family == AF_INET) {
+          struct sockaddr_in *sa = (struct sockaddr_in *) &selfAddr;
+          struct sockaddr_in *sb = (struct sockaddr_in *) &peerAddr;
+          addrlen = sizeof(struct sockaddr_in);
+          rv = memcmp(&sa->sin_addr, &sb->sin_addr, sizeof(struct in_addr));
+          if (rv == 0) {
+            rv = sa->sin_port - sb->sin_port;
+          }
+        } else if (peerAddr.ss_family == AF_INET6) {
+          struct sockaddr_in6 *sa = (struct sockaddr_in6 *) &selfAddr;
+          struct sockaddr_in6 *sb = (struct sockaddr_in6 *) &peerAddr;
+          addrlen = sizeof(struct sockaddr_in6);
+          rv = memcmp(&sa->sin6_addr, &sb->sin6_addr, sizeof(struct in6_addr));
+          if (rv == 0) {
+            rv = sa->sin6_port - sb->sin6_port;
+          }
+        } else {
+          GLOO_THROW_INVALID_OPERATION_EXCEPTION("unknown sa_family");
+        }
 
-  if (rv == 0) {
-    GLOO_THROW_INVALID_OPERATION_EXCEPTION("cannot connect to self");
-  }
+        if (rv == 0) {
+          GLOO_THROW_INVALID_OPERATION_EXCEPTION("cannot connect to self");
+        }
 
-  is_client_ = rv > 0;
+        is_client_ = rv > 0;
 
-  // self_ < peer_; we are listening side.
-  if (!is_client_) {
-    waitUntilConnected(lock, true);
-    return;
-  }
+        // self_ < peer_; we are listening side.
+        if (!is_client_) {
+          waitUntilConnected(lock, true);
+          return;
+        }
 
-  // self_ > peer_; we are connecting side.
-  // First destroy listening socket.
-  device_->unregisterDescriptor(fd_, this);
-  ::close(fd_);
+        // self_ > peer_; we are connecting side.
+        // First destroy listening socket.
+        device_->unregisterDescriptor(fd_, this);
+        ::close(fd_);
 
-  // Create new socket to connect to peer.
-  fd_ = socket(peerAddr.ss_family, SOCK_STREAM | SOCK_NONBLOCK, 0);
-  if (fd_ == -1) {
-    signalAndThrowException(GLOO_ERROR_MSG("socket: ", strerror(errno)));
-  }
+        // Create new socket to connect to peer.
+        fd_ = socket(peerAddr.ss_family, SOCK_STREAM | SOCK_NONBLOCK, 0);
+        if (fd_ == -1) {
+          signalAndThrowException(GLOO_ERROR_MSG("socket: ", strerror(errno)));
+        }
 
-  // Set SO_REUSEADDR to signal that reuse of the source port is OK.
-  int on = 1;
-  rv = setsockopt(fd_, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
-  if (rv == -1) {
-    ::close(fd_);
-    fd_ = FD_INVALID;
-    signalAndThrowException(GLOO_ERROR_MSG("setsockopt: ", strerror(errno)));
-  }
+        // Set SO_REUSEADDR to signal that reuse of the source port is OK.
+        int on = 1;
+        rv = setsockopt(fd_, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+        if (rv == -1) {
+          ::close(fd_);
+          fd_ = FD_INVALID;
+          signalAndThrowException(GLOO_ERROR_MSG("setsockopt: ", strerror(errno)));
+        }
 
-  // Connect to peer
-  rv = ::connect(fd_, (struct sockaddr*)&peerAddr, addrlen);
-  if (rv == -1 && errno != EINPROGRESS) {
-    ::close(fd_);
-    fd_ = FD_INVALID;
-    signalAndThrowException(GLOO_ERROR_MSG("connect: ", strerror(errno)));
-  }
+        // Connect to peer
+        rv = ::connect(fd_, (struct sockaddr *) &peerAddr, addrlen);
+        if (rv == -1 && errno != EINPROGRESS) {
+          ::close(fd_);
+          fd_ = FD_INVALID;
+          signalAndThrowException(GLOO_ERROR_MSG("connect: ", strerror(errno)));
+        }
 
-  // Register with device so we're called when connection completes.
-  changeState(CONNECTING);
-  device_->registerDescriptor(fd_, EPOLLIN | EPOLLOUT, this);
+        // Register with device so we're called when connection completes.
+        changeState(CONNECTING);
+        device_->registerDescriptor(fd_, EPOLLIN | EPOLLOUT, this);
 
-  // Wait for connection to complete
-  waitUntilConnected(lock, true);
-}
+        // Wait for connection to complete
+        waitUntilConnected(lock, true);
+      }
 
-ssize_t Pair::prepareWrite(
-    Op& op,
-    const NonOwningPtr<UnboundBuffer>& buf,
-    struct iovec* iov,
-    int& ioc) {
-  ssize_t len = 0;
-  ioc = 0;
+      ssize_t Pair::prepareWrite(
+          Op &op,
+          const NonOwningPtr<UnboundBuffer> &buf,
+          struct iovec *iov,
+          int &ioc) {
+        ssize_t len = 0;
+        ioc = 0;
 
-  // Include preamble if necessary
-  if (op.nwritten < sizeof(op.preamble)) {
-    iov[ioc].iov_base = ((char*)&op.preamble) + op.nwritten;
-    iov[ioc].iov_len = sizeof(op.preamble) - op.nwritten;
-    len += iov[ioc].iov_len;
-    ioc++;
-  }
+        // Include preamble if necessary
+        if (op.nwritten < sizeof(op.preamble)) {
+          iov[ioc].iov_base = ((char *) &op.preamble) + op.nwritten;
+          iov[ioc].iov_len = sizeof(op.preamble) - op.nwritten;
+          len += iov[ioc].iov_len;
+          ioc++;
+        }
 
-  auto opcode = op.getOpcode();
+        auto opcode = op.getOpcode();
 
-  // Send data to a remote buffer
-  if (opcode == Op::SEND_BUFFER) {
-    char* ptr = (char*)op.buf->ptr_;
-    size_t offset = op.preamble.offset;
-    size_t nbytes = op.preamble.length;
-    if (op.nwritten > sizeof(op.preamble)) {
-      offset += op.nwritten - sizeof(op.preamble);
-      nbytes -= op.nwritten - sizeof(op.preamble);
-    }
-    iov[ioc].iov_base = ptr + offset;
-    iov[ioc].iov_len = nbytes;
-    len += iov[ioc].iov_len;
-    ioc++;
-    return len;
-  }
+        // Send data to a remote buffer
+        if (opcode == Op::SEND_BUFFER) {
+          char *ptr = (char *) op.buf->ptr_;
+          size_t offset = op.preamble.offset;
+          size_t nbytes = op.preamble.length;
+          if (op.nwritten > sizeof(op.preamble)) {
+            offset += op.nwritten - sizeof(op.preamble);
+            nbytes -= op.nwritten - sizeof(op.preamble);
+          }
+          iov[ioc].iov_base = ptr + offset;
+          iov[ioc].iov_len = nbytes;
+          len += iov[ioc].iov_len;
+          ioc++;
+          return len;
+        }
 
-  // Send data to a remote unbound buffer
-  if (opcode == Op::SEND_UNBOUND_BUFFER) {
-    char* ptr = (char*)buf->ptr;
-    size_t offset = op.offset;
-    size_t nbytes = op.nbytes;
-    if (op.nwritten > sizeof(op.preamble)) {
-      offset += op.nwritten - sizeof(op.preamble);
-      nbytes -= op.nwritten - sizeof(op.preamble);
-    }
-    iov[ioc].iov_base = ptr + offset;
-    iov[ioc].iov_len = nbytes;
-    len += iov[ioc].iov_len;
-    ioc++;
-    return len;
-  }
+        // Send data to a remote unbound buffer
+        if (opcode == Op::SEND_UNBOUND_BUFFER) {
+          char *ptr = (char *) buf->ptr;
+          size_t offset = op.offset;
+          size_t nbytes = op.nbytes;
+          if (op.nwritten > sizeof(op.preamble)) {
+            offset += op.nwritten - sizeof(op.preamble);
+            nbytes -= op.nwritten - sizeof(op.preamble);
+          }
+          iov[ioc].iov_base = ptr + offset;
+          iov[ioc].iov_len = nbytes;
+          len += iov[ioc].iov_len;
+          ioc++;
+          return len;
+        }
 
-  return len;
-}
+        return len;
+      }
 
-ssize_t Pair::prepareCOAPWrite(
-        Op& op,
-        const NonOwningPtr<UnboundBuffer>& buf,
-        char *dstBuf,
-        struct iovec* iov,
-        int& ioc,
-        COAPPacketHeader &coapPacketHeader) {
-    ssize_t len = 0;
-    ioc = 0;
+      void Pair::waitForUDPSync() {
+        const char *world_size = getenv("WORLD_SIZE");
+        int _world_size = atoi(world_size);
 
-    // Include preamble if necessary
+        for (int i = 0; i < _world_size - 1; i++) {
+#define MAXLINE 1046
+          char buffer[MAXLINE];
+          int recved_rank;
+          memset(buffer, 0, MAXLINE);
+          struct sockaddr_in cliaddr;
+          memset(&cliaddr, 0, sizeof(cliaddr));
+          ssize_t n;
+
+          socklen_t len = sizeof(cliaddr);  //len is value/result
+
+          n = recvfrom(sync_udp_fd, &recved_rank, sizeof(int),
+                       0, (struct sockaddr *) &cliaddr,
+                       &len);
+          buffer[n] = '\0';
+          printf("Read : %zu\n", n);
+          if (n < 0) {
+            printf("\n%s\n", strerror(errno));
+          }
+          printf("Recved sync from: %d\n", recved_rank);
+        }
+      }
+
+      void Pair::sendSyncUDP() {
+        const char *rank = getenv("RANK");
+        int _rank = atoi(rank);
+        struct sockaddr_in addr, srvAddr, sockInfo;
+        memset(&addr, 0, sizeof(addr));
+        const char *master_host = getenv("MASTER_ADDR");
+        printf("Master host: %s\n", master_host);
+        addr.sin_addr.s_addr = inet_addr(master_host);
+        addr.sin_port = htons(UDP_SYNC_PORT);
+        addr.sin_family = AF_INET;
+        int _udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
+        if (_udp_fd == -1)
+          printf("Error UDP socket");
+        ssize_t n = sendto(_udp_fd, &_rank, sizeof(int), 0, (struct sockaddr *) &addr,
+               sizeof(addr));
+
+        printf("Sent sync bytes: %zd\n", n);
+
+      }
+
+      void Pair::syncUDP() {
+        int _rank = atoi(getenv("RANK"));
+        if (_rank == 0)
+          waitForUDPSync();
+        else
+          sendSyncUDP();
+      }
+
+      ssize_t Pair::prepareCOAPWrite(
+          Op &op,
+          const NonOwningPtr<UnboundBuffer> &buf,
+          char *dstBuf,
+          struct iovec *iov,
+          int &ioc,
+          COAPPacketHeader &coapPacketHeader) {
+        ssize_t len = 0;
+        ioc = 0;
+
+        // Include preamble if necessary
 //    if (op.nwritten < sizeof(op.preamble)) {
 //        iov[ioc].iov_base = ((char*)&op.preamble) + op.nwritten;
 //        iov[ioc].iov_len = sizeof(op.preamble) - op.nwritten;
@@ -431,55 +507,53 @@ ssize_t Pair::prepareCOAPWrite(
 //        ioc++;
 //        return len;
 //    }
-    int no_of_elements = 256;
-    coapPacketHeader.version_and_token_len = 16; // 00010000
-    coapPacketHeader.code = 0;
-    coapPacketHeader.message_id = 0;
-    coapPacketHeader.options = 0;
-    coapPacketHeader.end_options = 255;
-    coapPacketHeader.collective_id = 0;
-    coapPacketHeader.collective_type = 0;
-    coapPacketHeader.recursion_level = 0;
-    coapPacketHeader.rank = 0;
-    coapPacketHeader.no_of_nodes = 0;
-    coapPacketHeader.operation = 3; //MPI_Op::MPI_SUM;
-    coapPacketHeader.data_type = 0;
-    coapPacketHeader.no_of_elements = no_of_elements;
-    coapPacketHeader.distribution_total = 0;
-    coapPacketHeader.distribution_rank = 0;
-    cOAPPacketToNetworkByteOrder(coapPacketHeader);
-    iov[ioc].iov_base = ((char*)&coapPacketHeader) ;
-    iov[ioc].iov_len = sizeof(coapPacketHeader);
-    len += iov[ioc].iov_len;
-    ioc++;
+        int no_of_elements = 256;
+        coapPacketHeader.version_and_token_len = 16; // 00010000
+        coapPacketHeader.code = 0;
+        coapPacketHeader.message_id = 0;
+        coapPacketHeader.options = 0;
+        coapPacketHeader.end_options = 255;
+        coapPacketHeader.collective_id = 0;
+        coapPacketHeader.collective_type = 0;
+        coapPacketHeader.recursion_level = 0;
+        coapPacketHeader.rank = 0;
+        coapPacketHeader.no_of_nodes = 0;
+        coapPacketHeader.operation = 3; //MPI_Op::MPI_SUM;
+        coapPacketHeader.data_type = 0;
+        coapPacketHeader.no_of_elements = no_of_elements;
+        coapPacketHeader.distribution_total = 0;
+        coapPacketHeader.distribution_rank = 0;
+        cOAPPacketToNetworkByteOrder(coapPacketHeader);
+        iov[ioc].iov_base = ((char *) &coapPacketHeader);
+        iov[ioc].iov_len = sizeof(coapPacketHeader);
+        len += iov[ioc].iov_len;
+        ioc++;
 
-    for(int i = 0; i < no_of_elements; i++) {
-        int16_t int_part = (int16_t)((int32_t *)buf->ptr)[i];
-        ((uint16_t *)dstBuf)[2 * i] = int_part;
-        ((uint16_t *)dstBuf)[2 * i + 1] = 0;
+        for (int i = 0; i < no_of_elements; i++) {
+          int16_t int_part = (int16_t) ((int32_t *) buf->ptr)[i];
+          ((uint16_t *) dstBuf)[2 * i] = int_part;
+          ((uint16_t *) dstBuf)[2 * i + 1] = 0;
 
-    }
-    iov[ioc].iov_base = (char*)dstBuf;
-    iov[ioc].iov_len = sizeof(int32_t) * 256;
-    len += iov[ioc].iov_len;
-    ioc++;
-
-
+        }
+        iov[ioc].iov_base = (char *) dstBuf;
+        iov[ioc].iov_len = sizeof(int32_t) * 256;
+        len += iov[ioc].iov_len;
+        ioc++;
 
 
-    return len;
-}
+        return len;
+      }
 
-    void Pair::cOAPPacketToNetworkByteOrder(
-            COAPPacketHeader &coapPacketHeader
-    ) {
-    coapPacketHeader.message_id = htons(coapPacketHeader.message_id);
-    coapPacketHeader.options = htonl(coapPacketHeader.options);
-    coapPacketHeader.collective_id = htons(coapPacketHeader.collective_id);
-    coapPacketHeader.data_type = htons(coapPacketHeader.data_type);
-    coapPacketHeader.no_of_elements = htons(coapPacketHeader.no_of_elements);
+      void Pair::cOAPPacketToNetworkByteOrder(
+          COAPPacketHeader &coapPacketHeader
+      ) {
+        coapPacketHeader.message_id = htons(coapPacketHeader.message_id);
+        coapPacketHeader.options = htonl(coapPacketHeader.options);
+        coapPacketHeader.collective_id = htons(coapPacketHeader.collective_id);
+        coapPacketHeader.data_type = htons(coapPacketHeader.data_type);
+        coapPacketHeader.no_of_elements = htons(coapPacketHeader.no_of_elements);
 
-}
+      }
 
 // write is called from:
 // 1) the device thread (the handleEvents function)
@@ -488,159 +562,165 @@ ssize_t Pair::prepareCOAPWrite(
 // In either case, the lock is held and the write function
 // below inherits it.
 //
-bool Pair::write(Op& op) {
-    //printf("Write 1");
+      bool Pair::write(Op &op) {
+        //printf("Write 1");
 
-  if (state_ == CLOSED) {
-    return false;
-  }
-  NonOwningPtr<UnboundBuffer> buf;
-  std::array<struct iovec, 2> iov;
-  int ioc;
-  ssize_t rv;
+        if (state_ == CLOSED) {
+          return false;
+        }
+        NonOwningPtr<UnboundBuffer> buf;
+        std::array<struct iovec, 2> iov;
+        int ioc;
+        ssize_t rv;
 
-  const auto opcode = op.getOpcode();
+        const auto opcode = op.getOpcode();
 
-  // Acquire pointer to unbound buffer if applicable.
-  if (opcode == Op::SEND_UNBOUND_BUFFER) {
-    buf = NonOwningPtr<UnboundBuffer>(op.ubuf);
-    if (!buf) {
-      return false;
-    }
-  }
-  if(op.preamble.slot == 1000) {
-      printf("Write: slot 1000\n");
-      for(;;) {
-          COAPPacketHeader coapPacketHeader;
-          char coapBuffer[4 * 256];
-          memset(coapBuffer, 0, sizeof(coapBuffer));
-          const auto nbytes = prepareCOAPWrite(op, buf, coapBuffer, iov.data(), ioc, coapPacketHeader);
-          ssize_t myrv;
-          if((myrv = writev(udp_fd, iov.data(), ioc))==-1) {
-              printf("UDP write failed\n");
-          } else {
-              printf("\nWrote: %ld\n", myrv);
+        // Acquire pointer to unbound buffer if applicable.
+        if (opcode == Op::SEND_UNBOUND_BUFFER) {
+          buf = NonOwningPtr<UnboundBuffer>(op.ubuf);
+          if (!buf) {
+            return false;
           }
+        }
+        if (op.preamble.slot == 1000) {
+          std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
 
-          op.nwritten += myrv;
+          printf("Write: slot 1000\n");
+          for (;;) {
+            COAPPacketHeader coapPacketHeader;
+            char coapBuffer[4 * 256];
+            memset(coapBuffer, 0, sizeof(coapBuffer));
+            const auto nbytes = prepareCOAPWrite(op, buf, coapBuffer, iov.data(), ioc, coapPacketHeader);
+            ssize_t myrv;
+            syncUDP();
+            begin = std::chrono::steady_clock::now();
+            if ((myrv = writev(udp_fd, iov.data(), ioc)) == -1) {
+              printf("UDP write failed\n");
+            } else {
+              printf("\nWrote: %ld\n", myrv);
+            }
+
+            op.nwritten += myrv;
 //          if (myrv < nbytes) {
 //              continue;
 //          }
-          printf("Wrote %zu bytes out of %zd\n", op.nwritten, nbytes);
+            printf("Wrote %zu bytes out of %zd\n", op.nwritten, nbytes);
+            break;
+          }
+          printf("Write done\n");
+          printf("Reading...\n");
+          readUDP();
+          std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
+          printf("send-recv time: %ld ms", std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count());
+          printf("\nRead done\n");
+          return true;
+
+        }
+
+        for (;;) {
+          const auto nbytes = prepareWrite(op, buf, iov.data(), ioc);
+          // Write
+          rv = writev(fd_, iov.data(), ioc);
+
+          if (rv == -1) {
+            if (errno == EAGAIN) {
+              if (sync_) {
+                // Sync mode: blocking call returning with EAGAIN indicates timeout.
+                signalException(GLOO_ERROR_MSG("Write timeout ", peer_.str()));
+              } else {
+                // Async mode: can't write more than this.
+              }
+              return false;
+            }
+
+            if (errno == ECONNRESET) {
+              if (!sync_) {
+                return false;
+              }
+            }
+            if (errno == EPIPE) {
+              if (!sync_) {
+                return false;
+              }
+            }
+
+            // Retry on EINTR
+            if (errno == EINTR) {
+              continue;
+            }
+
+            // Unexpected error
+            signalException(
+                GLOO_ERROR_MSG("writev ", peer_.str(), ": ", strerror(errno)));
+            return false;
+          }
+
+          // From write(2) man page (NOTES section):
+          //
+          //  If a write() is interrupted by a signal handler before any
+          //  bytes are written, then the call fails with the error EINTR;
+          //  if it is interrupted after at least one byte has been written,
+          //  the call succeeds, and returns the number of bytes written.
+          //
+          // If rv < nbytes we ALWAYS retry, regardless of sync/async mode,
+          // since an EINTR may or may not have happened. If this was not
+          // the case, and the kernel buffer is full, the next call to
+          // write(2) will return EAGAIN, which is handled appropriately.
+          op.nwritten += rv;
+          if (rv < nbytes) {
+            continue;
+          }
+
+          GLOO_ENFORCE_EQ(rv, nbytes);
+          GLOO_ENFORCE_EQ(op.nwritten, op.preamble.nbytes);
           break;
-      }
-      printf("Write done\n");
-      printf("Reading...\n");
-      readUDP();
-      printf("\nRead done\n");
-      return true;
-
-  }
-
-  for (;;) {
-    const auto nbytes = prepareWrite(op, buf, iov.data(), ioc);
-    // Write
-    rv = writev(fd_, iov.data(), ioc);
-
-    if (rv == -1) {
-      if (errno == EAGAIN) {
-        if (sync_) {
-          // Sync mode: blocking call returning with EAGAIN indicates timeout.
-          signalException(GLOO_ERROR_MSG("Write timeout ", peer_.str()));
-        } else {
-          // Async mode: can't write more than this.
         }
-        return false;
+
+        writeComplete(op, buf, opcode);
+        return true;
       }
 
-      if (errno == ECONNRESET) {
-        if (!sync_) {
-          return false;
-        }
-      }
-      if (errno == EPIPE) {
-        if (!sync_) {
-          return false;
-        }
-      }
-
-      // Retry on EINTR
-      if (errno == EINTR) {
-        continue;
-      }
-
-      // Unexpected error
-      signalException(
-          GLOO_ERROR_MSG("writev ", peer_.str(), ": ", strerror(errno)));
-      return false;
-    }
-
-    // From write(2) man page (NOTES section):
-    //
-    //  If a write() is interrupted by a signal handler before any
-    //  bytes are written, then the call fails with the error EINTR;
-    //  if it is interrupted after at least one byte has been written,
-    //  the call succeeds, and returns the number of bytes written.
-    //
-    // If rv < nbytes we ALWAYS retry, regardless of sync/async mode,
-    // since an EINTR may or may not have happened. If this was not
-    // the case, and the kernel buffer is full, the next call to
-    // write(2) will return EAGAIN, which is handled appropriately.
-    op.nwritten += rv;
-    if (rv < nbytes) {
-      continue;
-    }
-
-    GLOO_ENFORCE_EQ(rv, nbytes);
-    GLOO_ENFORCE_EQ(op.nwritten, op.preamble.nbytes);
-    break;
-  }
-
-  writeComplete(op, buf, opcode);
-  return true;
-}
-
-void Pair::readUDP() {
+      void Pair::readUDP() {
 #define MAXLINE 1046
-    char buffer[MAXLINE];
+        char buffer[MAXLINE];
 
-    struct sockaddr_in cliaddr;
-    memset(&cliaddr, 0, sizeof(cliaddr));
-    socklen_t len;
-    size_t n;
+        struct sockaddr_in cliaddr;
+        memset(&cliaddr, 0, sizeof(cliaddr));
+        socklen_t len;
+        size_t n;
 
-    len = sizeof(cliaddr);  //len is value/result
+        len = sizeof(cliaddr);  //len is value/result
 
-    n = recvfrom(udp_fd, (char *)buffer, MAXLINE,
-                        MSG_WAITALL, ( struct sockaddr *) &cliaddr,
-                        &len);
+        n = recvfrom(udp_fd, (char *) buffer, MAXLINE,
+                     MSG_WAITALL, (struct sockaddr *) &cliaddr,
+                     &len);
         //buffer[n] = '\0';
         printf("Read : %zu\n", n);
-        if(n < 0) {
-            printf("\n%s\n", strerror(errno));
+        if (n < 0) {
+          printf("\n%s\n", strerror(errno));
         }
         for (int i = 0; i < n / sizeof(int); i++) {
-            printf("%d, ", ((int *) buffer)[i]);
+          printf("%d, ", ((int *) buffer)[i]);
         }
         printf("\n");
-    
-}
 
-void Pair::writeComplete(const Op &op, NonOwningPtr<UnboundBuffer> &buf,
-                         const Op::Opcode &opcode) const {
-  switch (opcode) {
-    case Op::SEND_BUFFER:
-      op.buf->handleSendCompletion();
-      break;
-    case Op::SEND_UNBOUND_BUFFER:
-      buf->handleSendCompletion(this->rank_);
-      break;
-    case Op::NOTIFY_SEND_READY:
-      break;
-    case Op::NOTIFY_RECV_READY:
-      break;
-  }
-}
+      }
+
+      void Pair::writeComplete(const Op &op, NonOwningPtr<UnboundBuffer> &buf,
+                               const Op::Opcode &opcode) const {
+        switch (opcode) {
+          case Op::SEND_BUFFER:
+            op.buf->handleSendCompletion();
+            break;
+          case Op::SEND_UNBOUND_BUFFER:
+            buf->handleSendCompletion(this->rank_);
+            break;
+          case Op::NOTIFY_SEND_READY:
+            break;
+          case Op::NOTIFY_RECV_READY:
+            break;
+        }
+      }
 
 // Populates the iovec struct. May populate the 'buf' or 'ubuf' member field
 // in the op if the preamble indicates the operation is one of type SEND_BUFFER
@@ -651,73 +731,73 @@ void Pair::writeComplete(const Op &op, NonOwningPtr<UnboundBuffer> &buf,
 // buffer this message is intended for has not yet been registered (this can
 // only be the case for unbound buffers).
 //
-ssize_t Pair::prepareRead(
-    Op& op,
-    NonOwningPtr<UnboundBuffer>& buf,
-    struct iovec& iov) {
-  iov.iov_base = nullptr;
-  iov.iov_len = 0;
+      ssize_t Pair::prepareRead(
+          Op &op,
+          NonOwningPtr<UnboundBuffer> &buf,
+          struct iovec &iov) {
+        iov.iov_base = nullptr;
+        iov.iov_len = 0;
 
-  // Read preamble
-  if (op.nread < sizeof(op.preamble)) {
-    iov.iov_base = ((char*)&op.preamble) + op.nread;
-    iov.iov_len = sizeof(op.preamble) - op.nread;
-    return iov.iov_len;
-  }
+        // Read preamble
+        if (op.nread < sizeof(op.preamble)) {
+          iov.iov_base = ((char *) &op.preamble) + op.nread;
+          iov.iov_len = sizeof(op.preamble) - op.nread;
+          return iov.iov_len;
+        }
 
-  auto opcode = op.getOpcode();
-  auto offset = op.nread - sizeof(op.preamble);
+        auto opcode = op.getOpcode();
+        auto offset = op.nread - sizeof(op.preamble);
 
-  // Remote side is sending data to a buffer; read payload
-  if (opcode == Op::SEND_BUFFER) {
-    if (op.buf == nullptr) {
-      op.buf = getBuffer(op.preamble.slot);
-      // Buffer not (yet) registered, leave it for next loop iteration
-      if (op.buf == nullptr) {
-        return -1;
+        // Remote side is sending data to a buffer; read payload
+        if (opcode == Op::SEND_BUFFER) {
+          if (op.buf == nullptr) {
+            op.buf = getBuffer(op.preamble.slot);
+            // Buffer not (yet) registered, leave it for next loop iteration
+            if (op.buf == nullptr) {
+              return -1;
+            }
+          }
+
+          iov.iov_base = ((char *) op.buf->ptr_) + offset + op.preamble.roffset;
+          iov.iov_len = op.preamble.length - offset;
+
+          // Bytes read must be in bounds for target buffer
+          GLOO_ENFORCE_LE(op.preamble.roffset + op.preamble.length, op.buf->size_);
+          return iov.iov_len;
+        }
+
+        // Remote side is sending data to an unbound buffer; read payload
+        if (opcode == Op::SEND_UNBOUND_BUFFER) {
+          if (!op.ubuf) {
+            auto it = localPendingRecv_.find(op.preamble.slot);
+            GLOO_ENFORCE(it != localPendingRecv_.end());
+            std::deque<UnboundBufferOp> &queue = it->second;
+            GLOO_ENFORCE(!queue.empty());
+            std::tie(op.ubuf, op.offset, op.nbytes) = queue.front();
+            queue.pop_front();
+            if (queue.empty()) {
+              localPendingRecv_.erase(it);
+            }
+          }
+
+          // Acquire short lived pointer to unbound buffer.
+          // This is a stack allocated variable in the read function
+          // which is destructed upon that function returning.
+          buf = NonOwningPtr<UnboundBuffer>(op.ubuf);
+          if (!buf) {
+            return -1;
+          }
+
+          iov.iov_base = ((char *) buf->ptr) + op.offset + offset;
+          iov.iov_len = op.preamble.length - offset;
+
+          // Bytes read must be in bounds for target buffer
+          GLOO_ENFORCE_LE(op.preamble.length, op.nbytes);
+          return iov.iov_len;
+        }
+
+        return 0;
       }
-    }
-
-    iov.iov_base = ((char*)op.buf->ptr_) + offset + op.preamble.roffset;
-    iov.iov_len = op.preamble.length - offset;
-
-    // Bytes read must be in bounds for target buffer
-    GLOO_ENFORCE_LE(op.preamble.roffset + op.preamble.length, op.buf->size_);
-    return iov.iov_len;
-  }
-
-  // Remote side is sending data to an unbound buffer; read payload
-  if (opcode == Op::SEND_UNBOUND_BUFFER) {
-    if (!op.ubuf) {
-      auto it = localPendingRecv_.find(op.preamble.slot);
-      GLOO_ENFORCE(it != localPendingRecv_.end());
-      std::deque<UnboundBufferOp>& queue = it->second;
-      GLOO_ENFORCE(!queue.empty());
-      std::tie(op.ubuf, op.offset, op.nbytes) = queue.front();
-      queue.pop_front();
-      if (queue.empty()) {
-        localPendingRecv_.erase(it);
-      }
-    }
-
-    // Acquire short lived pointer to unbound buffer.
-    // This is a stack allocated variable in the read function
-    // which is destructed upon that function returning.
-    buf = NonOwningPtr<UnboundBuffer>(op.ubuf);
-    if (!buf) {
-      return -1;
-    }
-
-    iov.iov_base = ((char*)buf->ptr) + op.offset + offset;
-    iov.iov_len = op.preamble.length - offset;
-
-    // Bytes read must be in bounds for target buffer
-    GLOO_ENFORCE_LE(op.preamble.length, op.nbytes);
-    return iov.iov_len;
-  }
-
-  return 0;
-}
 
 // read is called from:
 // 1) the device thread (the handleEvents function).
@@ -726,741 +806,741 @@ ssize_t Pair::prepareRead(
 // In either case, the lock is held and the read function
 // below inherits it.
 //
-bool Pair::read() {
-  if (state_ == CLOSED) {
-    return false;
-  }
-  NonOwningPtr<UnboundBuffer> buf;
-  auto start = std::chrono::steady_clock::now();
-
-  for (;;) {
-    struct iovec iov = {
-        .iov_base = nullptr,
-        .iov_len = 0,
-    };
-    const auto nbytes = prepareRead(rx_, buf, iov);
-    if (nbytes < 0) {
-      return false;
-    }
-
-    // Break from loop if the op is complete.
-    // Note that this means that the buffer pointer has been
-    // set, per the call to prepareRead.
-    if (nbytes == 0) {
-      break;
-    }
-
-    // If busy-poll has been requested AND sync mode has been enabled for pair
-    // we'll keep spinning calling recv() on socket by supplying MSG_DONTWAIT
-    // flag. This is more efficient in terms of latency than allowing the kernel
-    // to de-schedule this thread waiting for IO event to happen. The tradeoff
-    // is stealing the CPU core just for busy polling.
-    ssize_t rv = 0;
-    for (;;) {
-      // Alas, readv does not support flags, so we need to use recv
-      rv = ::recv(fd_, iov.iov_base, iov.iov_len, busyPoll_ ? MSG_DONTWAIT : 0);
-      if (rv == -1) {
-        // EAGAIN happens when (1) non-blocking and there are no more bytes left
-        // to read or (2) blocking and timeout occurs.
-        if (errno == EAGAIN) {
-          if (sync_) {
-            // Sync mode: EAGAIN indicates nothing to read right now.
-            auto hasTimedOut = [&] {
-              return (timeout_ != kNoTimeout) &&
-                  ((std::chrono::steady_clock::now() - start) >= timeout_);
-            };
-            if (busyPoll_ && !hasTimedOut()) {
-              // Keep looping on EAGAIN if busy-poll flag has been set and the
-              // timeout (if set) hasn't been reached
-              continue;
-            } else {
-              // Either timeout on poll or blocking call returning with EAGAIN
-              // indicates timeout
-              signalException(GLOO_ERROR_MSG("Read timeout ", peer_.str()));
-            }
-          } else {
-            // Async mode: can't read more than this.
-          }
+      bool Pair::read() {
+        if (state_ == CLOSED) {
           return false;
         }
+        NonOwningPtr<UnboundBuffer> buf;
+        auto start = std::chrono::steady_clock::now();
 
-        // Retry on EINTR
-        if (errno == EINTR) {
-          continue;
+        for (;;) {
+          struct iovec iov = {
+              .iov_base = nullptr,
+              .iov_len = 0,
+          };
+          const auto nbytes = prepareRead(rx_, buf, iov);
+          if (nbytes < 0) {
+            return false;
+          }
+
+          // Break from loop if the op is complete.
+          // Note that this means that the buffer pointer has been
+          // set, per the call to prepareRead.
+          if (nbytes == 0) {
+            break;
+          }
+
+          // If busy-poll has been requested AND sync mode has been enabled for pair
+          // we'll keep spinning calling recv() on socket by supplying MSG_DONTWAIT
+          // flag. This is more efficient in terms of latency than allowing the kernel
+          // to de-schedule this thread waiting for IO event to happen. The tradeoff
+          // is stealing the CPU core just for busy polling.
+          ssize_t rv = 0;
+          for (;;) {
+            // Alas, readv does not support flags, so we need to use recv
+            rv = ::recv(fd_, iov.iov_base, iov.iov_len, busyPoll_ ? MSG_DONTWAIT : 0);
+            if (rv == -1) {
+              // EAGAIN happens when (1) non-blocking and there are no more bytes left
+              // to read or (2) blocking and timeout occurs.
+              if (errno == EAGAIN) {
+                if (sync_) {
+                  // Sync mode: EAGAIN indicates nothing to read right now.
+                  auto hasTimedOut = [&] {
+                    return (timeout_ != kNoTimeout) &&
+                           ((std::chrono::steady_clock::now() - start) >= timeout_);
+                  };
+                  if (busyPoll_ && !hasTimedOut()) {
+                    // Keep looping on EAGAIN if busy-poll flag has been set and the
+                    // timeout (if set) hasn't been reached
+                    continue;
+                  } else {
+                    // Either timeout on poll or blocking call returning with EAGAIN
+                    // indicates timeout
+                    signalException(GLOO_ERROR_MSG("Read timeout ", peer_.str()));
+                  }
+                } else {
+                  // Async mode: can't read more than this.
+                }
+                return false;
+              }
+
+              // Retry on EINTR
+              if (errno == EINTR) {
+                continue;
+              }
+
+              // Unexpected error
+              signalException(
+                  GLOO_ERROR_MSG("Read error ", peer_.str(), ": ", strerror(errno)));
+              return false;
+            }
+            break;
+          }
+
+          // Transition to CLOSED on EOF
+          if (rv == 0) {
+            signalException(
+                GLOO_ERROR_MSG("Connection closed by peer ", peer_.str()));
+            return false;
+          }
+
+          rx_.nread += rv;
         }
 
-        // Unexpected error
-        signalException(
-            GLOO_ERROR_MSG("Read error ", peer_.str(), ": ", strerror(errno)));
-        return false;
+        readComplete(buf);
+        return true;
       }
-      break;
-    }
 
-    // Transition to CLOSED on EOF
-    if (rv == 0) {
-      signalException(
-          GLOO_ERROR_MSG("Connection closed by peer ", peer_.str()));
-      return false;
-    }
+      void Pair::readComplete(NonOwningPtr<UnboundBuffer> &buf) {
+        const auto opcode = this->rx_.getOpcode();
+        switch (opcode) {
+          case Op::SEND_BUFFER:
+            // Done sending data to pinned buffer; trigger completion.
+            this->rx_.buf->handleRecvCompletion();
+            break;
+          case Op::SEND_UNBOUND_BUFFER:
+            // Remote side is sending data to unbound buffer; trigger completion
+            buf->handleRecvCompletion(this->rank_);
+            break;
+          case Op::NOTIFY_SEND_READY:
+            // Remote side has pending send operation
+            this->handleRemotePendingSend(this->rx_);
+            break;
+          case Op::NOTIFY_RECV_READY:
+            // Remote side has pending recv operation
+            this->handleRemotePendingRecv(this->rx_);
+            break;
+        }
 
-    rx_.nread += rv;
-  }
-
-  readComplete(buf);
-  return true;
-}
-
-void Pair::readComplete(NonOwningPtr<UnboundBuffer> &buf) {
-  const auto opcode = this->rx_.getOpcode();
-  switch (opcode) {
-    case Op::SEND_BUFFER:
-      // Done sending data to pinned buffer; trigger completion.
-      this->rx_.buf->handleRecvCompletion();
-      break;
-    case Op::SEND_UNBOUND_BUFFER:
-      // Remote side is sending data to unbound buffer; trigger completion
-      buf->handleRecvCompletion(this->rank_);
-      break;
-    case Op::NOTIFY_SEND_READY:
-      // Remote side has pending send operation
-      this->handleRemotePendingSend(this->rx_);
-      break;
-    case Op::NOTIFY_RECV_READY:
-      // Remote side has pending recv operation
-      this->handleRemotePendingRecv(this->rx_);
-      break;
-    }
-
-    // Reset read operation state.
-  this->rx_ = Op();
-}
+        // Reset read operation state.
+        this->rx_ = Op();
+      }
 
 // This function is called upon receiving a message from the peer
 // indicating it has a pending send operation.
-void Pair::handleRemotePendingSend(const Op& op) {
-  const auto& slot = op.preamble.slot;
+      void Pair::handleRemotePendingSend(const Op &op) {
+        const auto &slot = op.preamble.slot;
 
-  // Acquire context lock through mutator.
-  Context::Mutator mutator(*context_, slot, rank_);
+        // Acquire context lock through mutator.
+        Context::Mutator mutator(*context_, slot, rank_);
 
-  // If a receive operation was posted without there already being a
-  // corresponding send notification, we'll find a pending send
-  // notification and don't need to handle this send notification.
-  if (mutator.shiftExpectedSendNotification()) {
-    return;
-  }
+        // If a receive operation was posted without there already being a
+        // corresponding send notification, we'll find a pending send
+        // notification and don't need to handle this send notification.
+        if (mutator.shiftExpectedSendNotification()) {
+          return;
+        }
 
-  {
-    // If we're ready to add it to the context wide pending operation
-    // tally, first check if there are any recv-from-any operations
-    // that this send operation can fulfill.
-    WeakNonOwningPtr<UnboundBuffer> buf;
-    size_t offset;
-    size_t nbytes;
-    if (context_->findRecvFromAny(slot, rank_, &buf, &offset, &nbytes)) {
-      localPendingRecv_[slot].push_back(std::make_tuple(buf, offset, nbytes));
-      sendNotifyRecvReady(slot, nbytes);
-      return;
-    }
-  }
+        {
+          // If we're ready to add it to the context wide pending operation
+          // tally, first check if there are any recv-from-any operations
+          // that this send operation can fulfill.
+          WeakNonOwningPtr<UnboundBuffer> buf;
+          size_t offset;
+          size_t nbytes;
+          if (context_->findRecvFromAny(slot, rank_, &buf, &offset, &nbytes)) {
+            localPendingRecv_[slot].push_back(std::make_tuple(buf, offset, nbytes));
+            sendNotifyRecvReady(slot, nbytes);
+            return;
+          }
+        }
 
-  // Increase balance of remote pending sends.
-  mutator.pushRemotePendingSend();
-}
+        // Increase balance of remote pending sends.
+        mutator.pushRemotePendingSend();
+      }
 
 // This function is called upon receiving a message from the peer
 // indicating it has a pending receive operation.
-void Pair::handleRemotePendingRecv(const Op& op) {
-  const auto& slot = op.preamble.slot;
+      void Pair::handleRemotePendingRecv(const Op &op) {
+        const auto &slot = op.preamble.slot;
 
-  // Find local pending send and execute it.
-  // Nothing to do if there are none.
-  auto it = localPendingSend_.find(slot);
-  if (it != localPendingSend_.end()) {
-    std::deque<UnboundBufferOp>& queue = it->second;
-    GLOO_ENFORCE(!queue.empty());
-    WeakNonOwningPtr<UnboundBuffer> buf;
-    size_t offset;
-    size_t nbytes;
-    std::tie(buf, offset, nbytes) = queue.front();
-    queue.pop_front();
-    if (queue.empty()) {
-      localPendingSend_.erase(it);
-    }
-    sendUnboundBuffer(std::move(buf), slot, offset, nbytes);
-    return;
-  }
+        // Find local pending send and execute it.
+        // Nothing to do if there are none.
+        auto it = localPendingSend_.find(slot);
+        if (it != localPendingSend_.end()) {
+          std::deque<UnboundBufferOp> &queue = it->second;
+          GLOO_ENFORCE(!queue.empty());
+          WeakNonOwningPtr<UnboundBuffer> buf;
+          size_t offset;
+          size_t nbytes;
+          std::tie(buf, offset, nbytes) = queue.front();
+          queue.pop_front();
+          if (queue.empty()) {
+            localPendingSend_.erase(it);
+          }
+          sendUnboundBuffer(std::move(buf), slot, offset, nbytes);
+          return;
+        }
 
-  // Increase balance of remote pending recv.
-  // Note that the current value CANNOT be negative, as sends
-  // cannot execute until the remote side is ready to receive.
-  Context::Mutator mutator(*context_, slot, rank_);
-  mutator.pushRemotePendingRecv();
-}
-
-void Pair::handleEvents(int events) {
-  // Try to acquire the pair's lock so the device thread (the thread
-  // that ends up calling handleEvents) can mutate the tx and rx op
-  // fields of this instance. If the lock cannot be acquired that
-  // means some other thread is trying to mutate this pair's state,
-  // which in turn might require calling into (and locking) the
-  // underlying device (for example, when the pair transitions to the
-  // CLOSED state). To avoid deadlocks, attempt to lock the pair and
-  // skip handling the events until the next tick if the lock cannot
-  // be acquired.
-  std::unique_lock<std::mutex> lock(m_, std::try_to_lock);
-  if (!lock) {
-    return;
-  }
-
-  // State must be <= CONNECTED.
-  // If state is CLOSED; this function will NOT be called. Refer to
-  // Pair::changeState and Device::unregisterDescriptor for more info.
-  GLOO_ENFORCE_LE(state_, CONNECTED);
-
-  // Exception must not be set.
-  // If exception is set, state must advance to CLOSED state.
-  GLOO_ENFORCE(ex_ == nullptr);
-
-  if (state_ == CONNECTED) {
-    handleReadWrite(events);
-    return;
-  }
-
-  if (state_ == LISTENING) {
-    handleListening();
-    return;
-  }
-
-  if (state_ == CONNECTING) {
-    handleConnecting();
-    return;
-  }
-
-  GLOO_ENFORCE(false, "Unexpected state: ", state_);
-}
-
-void Pair::handleReadWrite(int events) {
-  if (events & EPOLLOUT) {
-    GLOO_ENFORCE(
-        !tx_.empty(), "tx_ cannot be empty because EPOLLOUT happened");
-    while (!tx_.empty()) {
-      auto& op = tx_.front();
-      if (!write(op)) {
-        // Write did not complete; wait for epoll.
-        break;
+        // Increase balance of remote pending recv.
+        // Note that the current value CANNOT be negative, as sends
+        // cannot execute until the remote side is ready to receive.
+        Context::Mutator mutator(*context_, slot, rank_);
+        mutator.pushRemotePendingRecv();
       }
-      // Write completed; remove from queue.
-      tx_.pop_front();
-    }
-    // If there is nothing to transmit; remove EPOLLOUT.
-    if (tx_.empty()) {
-      device_->registerDescriptor(fd_, EPOLLIN, this);
-    }
-  }
-  if (events & EPOLLIN) {
-    while (read()) {
-      // Keep going
-    }
-  }
-}
 
-void Pair::handleListening() {
-  struct sockaddr_storage addr;
-  socklen_t addrlen = sizeof(addr);
-  int rv;
-
-  rv = accept(fd_, (struct sockaddr*)&addr, &addrlen);
-
-  // Close the listening file descriptor whether we've successfully connected
-  // or run into an error and will throw an exception.
-  device_->unregisterDescriptor(fd_, this);
-  ::close(fd_);
-  fd_ = FD_INVALID;
-
-  if (rv == -1) {
-    signalException(GLOO_ERROR_MSG("accept: ", strerror(errno)));
-    return;
-  }
-
-  // Connected, replace file descriptor
-  fd_ = rv;
-
-  // Common connection-made code
-  handleConnected();
-}
-
-void Pair::handleConnecting() {
-  int optval;
-  socklen_t optlen = sizeof(optval);
-  int rv;
-
-  // Verify that connecting was successful
-  rv = getsockopt(fd_, SOL_SOCKET, SO_ERROR, &optval, &optlen);
-  GLOO_ENFORCE_NE(rv, -1);
-  if (optval != 0) {
-    signalException(
-        GLOO_ERROR_MSG("connect ", peer_.str(), ": ", strerror(optval)));
-    return;
-  }
-
-  // Common connection-made code
-  handleConnected();
-}
-
-void Pair::handleConnected() {
-  int rv;
-
-  // Reset addresses
-  self_ = Address::fromSockName(fd_);
-  peer_ = Address::fromPeerName(fd_);
-
-  // Make sure socket is non-blocking
-  setSocketBlocking(fd_, false);
-
-  int flag = 1;
-  socklen_t optlen = sizeof(flag);
-  rv = setsockopt(fd_, IPPROTO_TCP, TCP_NODELAY, (char*)&flag, optlen);
-  GLOO_ENFORCE_NE(rv, -1);
-
-  // Set timeout
-  struct timeval tv = {};
-  tv.tv_sec = timeout_.count() / 1000;
-  tv.tv_usec = (timeout_.count() % 1000) * 1000;
-  rv = setsockopt(fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-  GLOO_ENFORCE_NE(rv, -1);
-  rv = setsockopt(fd_, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-  GLOO_ENFORCE_NE(rv, -1);
-
-  device_->registerDescriptor(fd_, EPOLLIN, this);
-  changeState(CONNECTED);
-}
-
-// getBuffer must only be called when holding lock.
-Buffer* Pair::getBuffer(int slot) {
-  for (;;) {
-    auto it = buffers_.find(slot);
-    if (it == buffers_.end()) {
-      // The remote peer already sent some bytes destined for the
-      // buffer at this slot, but this side of the pair hasn't
-      // registed it yet.
-      //
-      // The current strategy is to return and let the the device loop
-      // repeatedly call us again until the buffer has been
-      // registered. This essentially means busy waiting while
-      // yielding to other pairs. This is not a problem as this only
-      // happens at initialization time.
-      //
-      return nullptr;
-    }
-
-    return it->second;
-  }
-}
-
-void Pair::registerBuffer(Buffer* buf) {
-  std::lock_guard<std::mutex> lock(m_);
-  GLOO_ENFORCE(
-      buffers_.find(buf->slot_) == buffers_.end(),
-      "duplicate buffer for slot ",
-      buf->slot_);
-  buffers_[buf->slot_] = buf;
-  cv_.notify_all();
-}
-
-void Pair::unregisterBuffer(Buffer* buf) {
-  std::lock_guard<std::mutex> lock(m_);
-  buffers_.erase(buf->slot_);
-}
-
-// changeState must only be called when holding lock.
-void Pair::changeState(state nextState) noexcept {
-  if (nextState == CLOSED) {
-    switch (state_) {
-      case INITIALIZING:
-        // This state persists from construction up to the point where
-        // Pair::listen sets fd_ and calls listen(2). If this fails,
-        // it takes care of cleaning up the socket itself.
-        // There is no additional cleanup needed here.
-        break;
-      case LISTENING:
-        // The pair may be in the LISTENING state when it is destructed.
-        if (fd_ != FD_INVALID) {
-          device_->unregisterDescriptor(fd_, this);
-          ::close(fd_);
-          fd_ = FD_INVALID;
+      void Pair::handleEvents(int events) {
+        // Try to acquire the pair's lock so the device thread (the thread
+        // that ends up calling handleEvents) can mutate the tx and rx op
+        // fields of this instance. If the lock cannot be acquired that
+        // means some other thread is trying to mutate this pair's state,
+        // which in turn might require calling into (and locking) the
+        // underlying device (for example, when the pair transitions to the
+        // CLOSED state). To avoid deadlocks, attempt to lock the pair and
+        // skip handling the events until the next tick if the lock cannot
+        // be acquired.
+        std::unique_lock<std::mutex> lock(m_, std::try_to_lock);
+        if (!lock) {
+          return;
         }
-        break;
-      case CONNECTING:
-        // The pair may be in the CONNECTING state when it is destructed.
-        if (fd_ != FD_INVALID) {
-          device_->unregisterDescriptor(fd_, this);
-          ::close(fd_);
-          fd_ = FD_INVALID;
+
+        // State must be <= CONNECTED.
+        // If state is CLOSED; this function will NOT be called. Refer to
+        // Pair::changeState and Device::unregisterDescriptor for more info.
+        GLOO_ENFORCE_LE(state_, CONNECTED);
+
+        // Exception must not be set.
+        // If exception is set, state must advance to CLOSED state.
+        GLOO_ENFORCE(ex_ == nullptr);
+
+        if (state_ == CONNECTED) {
+          handleReadWrite(events);
+          return;
         }
-        break;
-      case CONNECTED:
-        if (!sync_) {
-          device_->unregisterDescriptor(fd_, this);
+
+        if (state_ == LISTENING) {
+          handleListening();
+          return;
         }
+
+        if (state_ == CONNECTING) {
+          handleConnecting();
+          return;
+        }
+
+        GLOO_ENFORCE(false, "Unexpected state: ", state_);
+      }
+
+      void Pair::handleReadWrite(int events) {
+        if (events & EPOLLOUT) {
+          GLOO_ENFORCE(
+              !tx_.empty(), "tx_ cannot be empty because EPOLLOUT happened");
+          while (!tx_.empty()) {
+            auto &op = tx_.front();
+            if (!write(op)) {
+              // Write did not complete; wait for epoll.
+              break;
+            }
+            // Write completed; remove from queue.
+            tx_.pop_front();
+          }
+          // If there is nothing to transmit; remove EPOLLOUT.
+          if (tx_.empty()) {
+            device_->registerDescriptor(fd_, EPOLLIN, this);
+          }
+        }
+        if (events & EPOLLIN) {
+          while (read()) {
+            // Keep going
+          }
+        }
+      }
+
+      void Pair::handleListening() {
+        struct sockaddr_storage addr;
+        socklen_t addrlen = sizeof(addr);
+        int rv;
+
+        rv = accept(fd_, (struct sockaddr *) &addr, &addrlen);
+
+        // Close the listening file descriptor whether we've successfully connected
+        // or run into an error and will throw an exception.
+        device_->unregisterDescriptor(fd_, this);
         ::close(fd_);
         fd_ = FD_INVALID;
-        break;
-      case CLOSED:
-        // This can't happen, because we ignore no-op state changes above.
-        // We handle it regardless to have a case for every enum value.
-        break;
-    }
-  }
 
-  state_ = nextState;
-  cv_.notify_all();
-}
+        if (rv == -1) {
+          signalException(GLOO_ERROR_MSG("accept: ", strerror(errno)));
+          return;
+        }
 
-void Pair::waitUntilConnected(
-    std::unique_lock<std::mutex>& lock,
-    bool useTimeout) {
-  auto pred = [&] {
-    throwIfException();
-    return state_ >= CONNECTED;
-  };
-  waitUntil(pred, lock, useTimeout);
-}
+        // Connected, replace file descriptor
+        fd_ = rv;
 
-void Pair::verifyConnected() {
-  // This code path should only be called after reaching the connected state
-  GLOO_ENFORCE_GE(
-      state_,
-      CONNECTED,
-      "Pair is not connected (",
-      self_.str(),
-      " <--> ",
-      peer_.str(),
-      ")");
-  // Check if the socket has been closed. We were unable to tell if this was an
-  // error or normal tear down, but now throw since we are trying to do IO.
-  if (state_ == CLOSED) {
-    signalAndThrowException(GLOO_ERROR_MSG("Socket closed ", peer_.str()));
-  }
-}
+        // Common connection-made code
+        handleConnected();
+      }
+
+      void Pair::handleConnecting() {
+        int optval;
+        socklen_t optlen = sizeof(optval);
+        int rv;
+
+        // Verify that connecting was successful
+        rv = getsockopt(fd_, SOL_SOCKET, SO_ERROR, &optval, &optlen);
+        GLOO_ENFORCE_NE(rv, -1);
+        if (optval != 0) {
+          signalException(
+              GLOO_ERROR_MSG("connect ", peer_.str(), ": ", strerror(optval)));
+          return;
+        }
+
+        // Common connection-made code
+        handleConnected();
+      }
+
+      void Pair::handleConnected() {
+        int rv;
+
+        // Reset addresses
+        self_ = Address::fromSockName(fd_);
+        peer_ = Address::fromPeerName(fd_);
+
+        // Make sure socket is non-blocking
+        setSocketBlocking(fd_, false);
+
+        int flag = 1;
+        socklen_t optlen = sizeof(flag);
+        rv = setsockopt(fd_, IPPROTO_TCP, TCP_NODELAY, (char *) &flag, optlen);
+        GLOO_ENFORCE_NE(rv, -1);
+
+        // Set timeout
+        struct timeval tv = {};
+        tv.tv_sec = timeout_.count() / 1000;
+        tv.tv_usec = (timeout_.count() % 1000) * 1000;
+        rv = setsockopt(fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        GLOO_ENFORCE_NE(rv, -1);
+        rv = setsockopt(fd_, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+        GLOO_ENFORCE_NE(rv, -1);
+
+        device_->registerDescriptor(fd_, EPOLLIN, this);
+        changeState(CONNECTED);
+      }
+
+// getBuffer must only be called when holding lock.
+      Buffer *Pair::getBuffer(int slot) {
+        for (;;) {
+          auto it = buffers_.find(slot);
+          if (it == buffers_.end()) {
+            // The remote peer already sent some bytes destined for the
+            // buffer at this slot, but this side of the pair hasn't
+            // registed it yet.
+            //
+            // The current strategy is to return and let the the device loop
+            // repeatedly call us again until the buffer has been
+            // registered. This essentially means busy waiting while
+            // yielding to other pairs. This is not a problem as this only
+            // happens at initialization time.
+            //
+            return nullptr;
+          }
+
+          return it->second;
+        }
+      }
+
+      void Pair::registerBuffer(Buffer *buf) {
+        std::lock_guard<std::mutex> lock(m_);
+        GLOO_ENFORCE(
+            buffers_.find(buf->slot_) == buffers_.end(),
+            "duplicate buffer for slot ",
+            buf->slot_);
+        buffers_[buf->slot_] = buf;
+        cv_.notify_all();
+      }
+
+      void Pair::unregisterBuffer(Buffer *buf) {
+        std::lock_guard<std::mutex> lock(m_);
+        buffers_.erase(buf->slot_);
+      }
+
+// changeState must only be called when holding lock.
+      void Pair::changeState(state nextState) noexcept {
+        if (nextState == CLOSED) {
+          switch (state_) {
+            case INITIALIZING:
+              // This state persists from construction up to the point where
+              // Pair::listen sets fd_ and calls listen(2). If this fails,
+              // it takes care of cleaning up the socket itself.
+              // There is no additional cleanup needed here.
+              break;
+            case LISTENING:
+              // The pair may be in the LISTENING state when it is destructed.
+              if (fd_ != FD_INVALID) {
+                device_->unregisterDescriptor(fd_, this);
+                ::close(fd_);
+                fd_ = FD_INVALID;
+              }
+              break;
+            case CONNECTING:
+              // The pair may be in the CONNECTING state when it is destructed.
+              if (fd_ != FD_INVALID) {
+                device_->unregisterDescriptor(fd_, this);
+                ::close(fd_);
+                fd_ = FD_INVALID;
+              }
+              break;
+            case CONNECTED:
+              if (!sync_) {
+                device_->unregisterDescriptor(fd_, this);
+              }
+              ::close(fd_);
+              fd_ = FD_INVALID;
+              break;
+            case CLOSED:
+              // This can't happen, because we ignore no-op state changes above.
+              // We handle it regardless to have a case for every enum value.
+              break;
+          }
+        }
+
+        state_ = nextState;
+        cv_.notify_all();
+      }
+
+      void Pair::waitUntilConnected(
+          std::unique_lock<std::mutex> &lock,
+          bool useTimeout) {
+        auto pred = [&] {
+          throwIfException();
+          return state_ >= CONNECTED;
+        };
+        waitUntil(pred, lock, useTimeout);
+      }
+
+      void Pair::verifyConnected() {
+        // This code path should only be called after reaching the connected state
+        GLOO_ENFORCE_GE(
+            state_,
+            CONNECTED,
+            "Pair is not connected (",
+            self_.str(),
+            " <--> ",
+            peer_.str(),
+            ")");
+        // Check if the socket has been closed. We were unable to tell if this was an
+        // error or normal tear down, but now throw since we are trying to do IO.
+        if (state_ == CLOSED) {
+          signalAndThrowException(GLOO_ERROR_MSG("Socket closed ", peer_.str()));
+        }
+      }
 
 // Sends contents of operation to the remote side of the pair.
 // The pair's mutex is held when this function is called.
 // Only applicable to synchronous mode. May block.
-void Pair::sendSyncMode(Op& op) {
-  GLOO_ENFORCE(sync_);
-  auto rv = write(op);
-  if (!rv) {
-    GLOO_ENFORCE(ex_ != nullptr);
-    std::rethrow_exception(ex_);
-  }
-}
+      void Pair::sendSyncMode(Op &op) {
+        GLOO_ENFORCE(sync_);
+        auto rv = write(op);
+        if (!rv) {
+          GLOO_ENFORCE(ex_ != nullptr);
+          std::rethrow_exception(ex_);
+        }
+      }
 
 // Sends contents of operation to the remote side of the pair.
 // The pair's mutex is held when this function is called.
 // Only applicable to asynchronous mode. Never blocks.
-void Pair::sendAsyncMode(Op& op) {
-  GLOO_ENFORCE(!sync_);
+      void Pair::sendAsyncMode(Op &op) {
+        GLOO_ENFORCE(!sync_);
 
-  // If an earlier operation hasn't finished transmitting,
-  // add this operation to the transmit queue.
+        // If an earlier operation hasn't finished transmitting,
+        // add this operation to the transmit queue.
         printf("sendAsyncMode: Slot: %zu and tx queue empty: %d\n", op.preamble.slot, tx_.empty());
-        if(op.preamble.slot == 1000) {
-            printf("sendAsyncMode: Writing\n");
-            if(write(op)) {
-                printf("Write successful.\n");
-            } else {
-                printf("Write not successful.\n");
-            }
-            return;
+        if (op.preamble.slot == 1000) {
+          printf("sendAsyncMode: Writing\n");
+          if (write(op)) {
+            printf("Write successful.\n");
+          } else {
+            printf("Write not successful.\n");
+          }
+          return;
 
         }
-  if (!tx_.empty()) {
-    tx_.push_back(std::move(op));
-    return;
-  }
+        if (!tx_.empty()) {
+          tx_.push_back(std::move(op));
+          return;
+        }
 
-  // Write in place without checking socket for writeability.
-  // This is the fast path.
-  if (write(op)) {
-    return;
-  }
+        // Write in place without checking socket for writeability.
+        // This is the fast path.
+        if (write(op)) {
+          return;
+        }
 
-  // Write may have resulted in an error.
-  throwIfException();
+        // Write may have resulted in an error.
+        throwIfException();
 
-  // Write didn't complete; pass to event loop
-  tx_.push_back(std::move(op));
-  device_->registerDescriptor(fd_, EPOLLIN | EPOLLOUT, this);
-}
+        // Write didn't complete; pass to event loop
+        tx_.push_back(std::move(op));
+        device_->registerDescriptor(fd_, EPOLLIN | EPOLLOUT, this);
+      }
 
-void Pair::send(Op& op) {
-  std::unique_lock<std::mutex> lock(m_);
-  throwIfException();
-  verifyConnected();
+      void Pair::send(Op &op) {
+        std::unique_lock<std::mutex> lock(m_);
+        throwIfException();
+        verifyConnected();
 
-  // Try to size the send buffer such that the write below completes
-  // synchronously and we don't need to finish the write later.
-  size_t size = std::min(op.preamble.nbytes, kMaxSendBufferSize);
-  if (sendBufferSize_ < size) {
-    int rv;
-    size_t optval = size;
-    socklen_t optlen = sizeof(optval);
-    rv = setsockopt(fd_, SOL_SOCKET, SO_SNDBUF, &optval, optlen);
-    GLOO_ENFORCE_NE(rv, -1);
-    rv = getsockopt(fd_, SOL_SOCKET, SO_SNDBUF, &optval, &optlen);
-    GLOO_ENFORCE_NE(rv, -1);
-    sendBufferSize_ = optval;
-  }
+        // Try to size the send buffer such that the write below completes
+        // synchronously and we don't need to finish the write later.
+        size_t size = std::min(op.preamble.nbytes, kMaxSendBufferSize);
+        if (sendBufferSize_ < size) {
+          int rv;
+          size_t optval = size;
+          socklen_t optlen = sizeof(optval);
+          rv = setsockopt(fd_, SOL_SOCKET, SO_SNDBUF, &optval, optlen);
+          GLOO_ENFORCE_NE(rv, -1);
+          rv = getsockopt(fd_, SOL_SOCKET, SO_SNDBUF, &optval, &optlen);
+          GLOO_ENFORCE_NE(rv, -1);
+          sendBufferSize_ = optval;
+        }
 
-  // Write to socket
-  if (sync_) {
-    sendSyncMode(op);
-  } else {
-    sendAsyncMode(op);
-  }
-}
+        // Write to socket
+        if (sync_) {
+          sendSyncMode(op);
+        } else {
+          sendAsyncMode(op);
+        }
+      }
 
-void Pair::recv() {
-  std::unique_lock<std::mutex> lock(m_);
-  throwIfException();
-  verifyConnected();
+      void Pair::recv() {
+        std::unique_lock<std::mutex> lock(m_);
+        throwIfException();
+        verifyConnected();
 
-  auto rv = read();
-  if (!rv) {
-    GLOO_ENFORCE(
-        ex_ != nullptr, "read() returned false in sync mode; ex_ must be set");
-    std::rethrow_exception(ex_);
-  }
-}
+        auto rv = read();
+        if (!rv) {
+          GLOO_ENFORCE(
+              ex_ != nullptr, "read() returned false in sync mode; ex_ must be set");
+          std::rethrow_exception(ex_);
+        }
+      }
 
-std::unique_ptr<::gloo::transport::Buffer> Pair::createSendBuffer(
-    int slot,
-    void* ptr,
-    size_t size) {
-  auto buffer = new Buffer(this, slot, ptr, size);
-  return std::unique_ptr<::gloo::transport::Buffer>(buffer);
-}
+      std::unique_ptr<::gloo::transport::Buffer> Pair::createSendBuffer(
+          int slot,
+          void *ptr,
+          size_t size) {
+        auto buffer = new Buffer(this, slot, ptr, size);
+        return std::unique_ptr<::gloo::transport::Buffer>(buffer);
+      }
 
-std::unique_ptr<::gloo::transport::Buffer> Pair::createRecvBuffer(
-    int slot,
-    void* ptr,
-    size_t size) {
-  auto buffer = new Buffer(this, slot, ptr, size);
-  registerBuffer(buffer);
-  return std::unique_ptr<::gloo::transport::Buffer>(buffer);
-}
+      std::unique_ptr<::gloo::transport::Buffer> Pair::createRecvBuffer(
+          int slot,
+          void *ptr,
+          size_t size) {
+        auto buffer = new Buffer(this, slot, ptr, size);
+        registerBuffer(buffer);
+        return std::unique_ptr<::gloo::transport::Buffer>(buffer);
+      }
 
 // Send from the specified buffer t%zuremote side of pair.
-void Pair::send(
-    transport::UnboundBuffer* tbuf,
-    uint64_t slot,
-    size_t offset,
-    size_t nbytes) {
-  auto buf = static_cast<tcp::UnboundBuffer*>(tbuf)->getWeakNonOwningPtr();
+      void Pair::send(
+          transport::UnboundBuffer *tbuf,
+          uint64_t slot,
+          size_t offset,
+          size_t nbytes) {
+        auto buf = static_cast<tcp::UnboundBuffer *>(tbuf)->getWeakNonOwningPtr();
 
-  if (nbytes > 0) {
-    GLOO_ENFORCE_LE(offset, tbuf->size);
-    GLOO_ENFORCE_LE(nbytes, tbuf->size - offset);
-  }
+        if (nbytes > 0) {
+          GLOO_ENFORCE_LE(offset, tbuf->size);
+          GLOO_ENFORCE_LE(nbytes, tbuf->size - offset);
+        }
 
-  std::unique_lock<std::mutex> lock(m_);
-  throwIfException();
-  if(slot == 1000) {
-      printf("Slot 1000, sending... %zu bytes\n", nbytes);
-      sendUnboundBuffer(std::move(buf), slot, offset, nbytes);
-      return;
-  }
+        std::unique_lock<std::mutex> lock(m_);
+        throwIfException();
+        if (slot == 1000) {
+          printf("Slot 1000, sending... %zu bytes\n", nbytes);
+          sendUnboundBuffer(std::move(buf), slot, offset, nbytes);
+          return;
+        }
 
-  // Execute this send if there is a remote pending receive.
-  Context::Mutator mutator(*context_, slot, rank_);
-  if (mutator.shiftRemotePendingRecv()) {
-    // We keep a count of remote pending send and receive operations.
-    // In this code path the remote side hasn't seen a notification
-    // for this send operation yet so we need to take special care
-    // their count is updated regardless.
-    sendNotifySendReady(slot, nbytes);
-    sendUnboundBuffer(std::move(buf), slot, offset, nbytes);
-    return;
-  }
+        // Execute this send if there is a remote pending receive.
+        Context::Mutator mutator(*context_, slot, rank_);
+        if (mutator.shiftRemotePendingRecv()) {
+          // We keep a count of remote pending send and receive operations.
+          // In this code path the remote side hasn't seen a notification
+          // for this send operation yet so we need to take special care
+          // their count is updated regardless.
+          sendNotifySendReady(slot, nbytes);
+          sendUnboundBuffer(std::move(buf), slot, offset, nbytes);
+          return;
+        }
 
-  // Notify peer of this pending send.
-  localPendingSend_[slot].push_back(std::make_tuple(buf, offset, nbytes));
-  sendNotifySendReady(slot, nbytes);
-}
+        // Notify peer of this pending send.
+        localPendingSend_[slot].push_back(std::make_tuple(buf, offset, nbytes));
+        sendNotifySendReady(slot, nbytes);
+      }
 
 // Receive into the specified buffer from the remote side of pair.
-void Pair::recv(
-    transport::UnboundBuffer* tbuf,
-    uint64_t slot,
-    size_t offset,
-    size_t nbytes) {
-  auto buf = static_cast<tcp::UnboundBuffer*>(tbuf)->getWeakNonOwningPtr();
+      void Pair::recv(
+          transport::UnboundBuffer *tbuf,
+          uint64_t slot,
+          size_t offset,
+          size_t nbytes) {
+        auto buf = static_cast<tcp::UnboundBuffer *>(tbuf)->getWeakNonOwningPtr();
 
-  if (nbytes > 0) {
-    GLOO_ENFORCE_LE(offset, tbuf->size);
-    GLOO_ENFORCE_LE(nbytes, tbuf->size - offset);
-  }
+        if (nbytes > 0) {
+          GLOO_ENFORCE_LE(offset, tbuf->size);
+          GLOO_ENFORCE_LE(nbytes, tbuf->size - offset);
+        }
 
-  std::unique_lock<std::mutex> lock(m_);
-  throwIfException();
+        std::unique_lock<std::mutex> lock(m_);
+        throwIfException();
 
-  // If this recv happens before the send notification,
-  // we are still owed a send notification. Because this recv
-  // has already been posted, we have to make sure it doesn't
-  // hit the context wide tally.
-  Context::Mutator mutator(*context_, slot, rank_);
-  if (!mutator.shiftRemotePendingSend()) {
-    mutator.pushExpectedSendNotification();
-  }
+        // If this recv happens before the send notification,
+        // we are still owed a send notification. Because this recv
+        // has already been posted, we have to make sure it doesn't
+        // hit the context wide tally.
+        Context::Mutator mutator(*context_, slot, rank_);
+        if (!mutator.shiftRemotePendingSend()) {
+          mutator.pushExpectedSendNotification();
+        }
 
-  // Notify peer of this pending recv.
-  localPendingRecv_[slot].push_back(std::make_tuple(buf, offset, nbytes));
-  sendNotifyRecvReady(slot, nbytes);
-}
-
-bool Pair::tryRecv(
-    transport::UnboundBuffer* tbuf,
-    uint64_t slot,
-    size_t offset,
-    size_t nbytes) {
-  auto buf = static_cast<tcp::UnboundBuffer*>(tbuf)->getWeakNonOwningPtr();
-
-  if (nbytes > 0) {
-    GLOO_ENFORCE_LE(offset, tbuf->size);
-    GLOO_ENFORCE_LE(nbytes, tbuf->size - offset);
-  }
-
-  std::unique_lock<std::mutex> lock(m_);
-  throwIfException();
-
-  // Return early if there is no remote pending send.
-  Context::Mutator mutator(*context_, slot, rank_);
-  if (!mutator.shiftRemotePendingSend()) {
-    return false;
-  }
-
-  // Notify peer of this pending recv.
-  localPendingRecv_[slot].push_back(std::make_tuple(buf, offset, nbytes));
-  sendNotifyRecvReady(slot, nbytes);
-  return true;
-}
-
-void Pair::sendUnboundBuffer(
-    WeakNonOwningPtr<UnboundBuffer> buf,
-    uint64_t slot,
-    size_t offset,
-    size_t nbytes) {
-  Op op;
-  op.preamble.nbytes = sizeof(op.preamble) + nbytes;
-  op.preamble.opcode = Op::SEND_UNBOUND_BUFFER;
-  op.preamble.slot = slot;
-  op.preamble.length = nbytes;
-  op.ubuf = std::move(buf);
-  op.offset = offset;
-  op.nbytes = nbytes;
-  sendAsyncMode(op);
-}
-
-void Pair::sendNotifyRecvReady(uint64_t slot, size_t nbytes) {
-  Op op;
-  op.preamble.nbytes = sizeof(op.preamble);
-  op.preamble.opcode = Op::NOTIFY_RECV_READY;
-  op.preamble.slot = slot;
-  op.preamble.length = nbytes;
-  sendAsyncMode(op);
-}
-
-void Pair::sendNotifySendReady(uint64_t slot, size_t nbytes) {
-  Op op;
-  op.preamble.nbytes = sizeof(op.preamble);
-  op.preamble.opcode = Op::NOTIFY_SEND_READY;
-  op.preamble.slot = slot;
-  op.preamble.length = nbytes;
-  sendAsyncMode(op);
-}
-
-void Pair::throwIfException() {
-  // If we previously encountered an error, rethrow here.
-  if (ex_ != nullptr) {
-    std::rethrow_exception(ex_);
-  }
-}
-
-std::exception_ptr Pair::signalExceptionExternal(const std::string& msg) {
-  std::lock_guard<std::mutex> lock(m_);
-
-  // This function may be called by a buffer upon timing out waiting
-  // for some operation to complete. It may race with the device
-  // thread performing read/write operations, detecting a failure, and
-  // setting an exception as well. Therefore, check if an exception is
-  // already set, and ignore this call if it is.
-  if (ex_ == nullptr) {
-    signalException(msg);
-  }
-  return ex_;
-}
-
-void Pair::signalException(const std::string& msg) {
-  signalException(std::make_exception_ptr(::gloo::IoException(msg)));
-}
-
-void Pair::signalException(std::exception_ptr ex) {
-  GLOO_ENFORCE(ex_ == nullptr);
-
-  // Loop through the buffers and signal that an error has occurred.
-  for (auto it = buffers_.begin(); it != buffers_.end(); it++) {
-    it->second->signalException(ex);
-  }
-
-  // Loop through posted send operations.
-  for (auto& op : tx_) {
-    if (op.buf != nullptr) {
-      op.buf->signalException(ex);
-    }
-  }
-
-  // Loop through pending send operations.
-  for (auto& it : localPendingSend_) {
-    for (auto& op : it.second) {
-      NonOwningPtr<UnboundBuffer> buf(std::get<0>(op));
-      if (buf) {
-        buf->signalException(ex);
+        // Notify peer of this pending recv.
+        localPendingRecv_[slot].push_back(std::make_tuple(buf, offset, nbytes));
+        sendNotifyRecvReady(slot, nbytes);
       }
-    }
-  }
 
-  // Loop through pending recv operations.
-  for (auto& it : localPendingRecv_) {
-    for (auto& op : it.second) {
-      NonOwningPtr<UnboundBuffer> buf(std::get<0>(op));
-      if (buf) {
-        buf->signalException(ex);
+      bool Pair::tryRecv(
+          transport::UnboundBuffer *tbuf,
+          uint64_t slot,
+          size_t offset,
+          size_t nbytes) {
+        auto buf = static_cast<tcp::UnboundBuffer *>(tbuf)->getWeakNonOwningPtr();
+
+        if (nbytes > 0) {
+          GLOO_ENFORCE_LE(offset, tbuf->size);
+          GLOO_ENFORCE_LE(nbytes, tbuf->size - offset);
+        }
+
+        std::unique_lock<std::mutex> lock(m_);
+        throwIfException();
+
+        // Return early if there is no remote pending send.
+        Context::Mutator mutator(*context_, slot, rank_);
+        if (!mutator.shiftRemotePendingSend()) {
+          return false;
+        }
+
+        // Notify peer of this pending recv.
+        localPendingRecv_[slot].push_back(std::make_tuple(buf, offset, nbytes));
+        sendNotifyRecvReady(slot, nbytes);
+        return true;
       }
-    }
-  }
 
-  // Store exception_ptr and signal any threads in the async path.
-  ex_ = ex;
-  cv_.notify_all();
+      void Pair::sendUnboundBuffer(
+          WeakNonOwningPtr<UnboundBuffer> buf,
+          uint64_t slot,
+          size_t offset,
+          size_t nbytes) {
+        Op op;
+        op.preamble.nbytes = sizeof(op.preamble) + nbytes;
+        op.preamble.opcode = Op::SEND_UNBOUND_BUFFER;
+        op.preamble.slot = slot;
+        op.preamble.length = nbytes;
+        op.ubuf = std::move(buf);
+        op.offset = offset;
+        op.nbytes = nbytes;
+        sendAsyncMode(op);
+      }
 
-  // Move to closed state.
-  // Either this error is an underlying socket error and the socket
-  // must be closed, or this error is an application side timeout, and
-  // we are no longer guaranteed that buffer pointers will be valid.
-  changeState(CLOSED);
-}
+      void Pair::sendNotifyRecvReady(uint64_t slot, size_t nbytes) {
+        Op op;
+        op.preamble.nbytes = sizeof(op.preamble);
+        op.preamble.opcode = Op::NOTIFY_RECV_READY;
+        op.preamble.slot = slot;
+        op.preamble.length = nbytes;
+        sendAsyncMode(op);
+      }
 
-void Pair::signalAndThrowException(const std::string& msg) {
-  signalAndThrowException(std::make_exception_ptr(::gloo::IoException(msg)));
-}
+      void Pair::sendNotifySendReady(uint64_t slot, size_t nbytes) {
+        Op op;
+        op.preamble.nbytes = sizeof(op.preamble);
+        op.preamble.opcode = Op::NOTIFY_SEND_READY;
+        op.preamble.slot = slot;
+        op.preamble.length = nbytes;
+        sendAsyncMode(op);
+      }
 
-void Pair::signalAndThrowException(std::exception_ptr ex) {
-  signalException(ex);
-  std::rethrow_exception(ex);
-}
+      void Pair::throwIfException() {
+        // If we previously encountered an error, rethrow here.
+        if (ex_ != nullptr) {
+          std::rethrow_exception(ex_);
+        }
+      }
 
-} // namespace tcp
-} // namespace transport
+      std::exception_ptr Pair::signalExceptionExternal(const std::string &msg) {
+        std::lock_guard<std::mutex> lock(m_);
+
+        // This function may be called by a buffer upon timing out waiting
+        // for some operation to complete. It may race with the device
+        // thread performing read/write operations, detecting a failure, and
+        // setting an exception as well. Therefore, check if an exception is
+        // already set, and ignore this call if it is.
+        if (ex_ == nullptr) {
+          signalException(msg);
+        }
+        return ex_;
+      }
+
+      void Pair::signalException(const std::string &msg) {
+        signalException(std::make_exception_ptr(::gloo::IoException(msg)));
+      }
+
+      void Pair::signalException(std::exception_ptr ex) {
+        GLOO_ENFORCE(ex_ == nullptr);
+
+        // Loop through the buffers and signal that an error has occurred.
+        for (auto it = buffers_.begin(); it != buffers_.end(); it++) {
+          it->second->signalException(ex);
+        }
+
+        // Loop through posted send operations.
+        for (auto &op: tx_) {
+          if (op.buf != nullptr) {
+            op.buf->signalException(ex);
+          }
+        }
+
+        // Loop through pending send operations.
+        for (auto &it: localPendingSend_) {
+          for (auto &op: it.second) {
+            NonOwningPtr<UnboundBuffer> buf(std::get<0>(op));
+            if (buf) {
+              buf->signalException(ex);
+            }
+          }
+        }
+
+        // Loop through pending recv operations.
+        for (auto &it: localPendingRecv_) {
+          for (auto &op: it.second) {
+            NonOwningPtr<UnboundBuffer> buf(std::get<0>(op));
+            if (buf) {
+              buf->signalException(ex);
+            }
+          }
+        }
+
+        // Store exception_ptr and signal any threads in the async path.
+        ex_ = ex;
+        cv_.notify_all();
+
+        // Move to closed state.
+        // Either this error is an underlying socket error and the socket
+        // must be closed, or this error is an application side timeout, and
+        // we are no longer guaranteed that buffer pointers will be valid.
+        changeState(CLOSED);
+      }
+
+      void Pair::signalAndThrowException(const std::string &msg) {
+        signalAndThrowException(std::make_exception_ptr(::gloo::IoException(msg)));
+      }
+
+      void Pair::signalAndThrowException(std::exception_ptr ex) {
+        signalException(ex);
+        std::rethrow_exception(ex);
+      }
+
+    } // namespace tcp
+  } // namespace transport
 } // namespace gloo

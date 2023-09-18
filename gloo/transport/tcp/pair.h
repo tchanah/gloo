@@ -167,7 +167,7 @@ class Pair : public ::gloo::transport::Pair, public Handler {
   bool busyPoll_;
   int fd_;
   size_t sendBufferSize_;
-  static int udp_fd;
+  static int udp_fd, sync_udp_fd;
   Address self_;
   Address peer_;
   bool is_client_;
@@ -401,6 +401,10 @@ class Pair : public ::gloo::transport::Pair, public Handler {
           );
 
     void readUDP();
+
+    void syncUDP();
+    void sendSyncUDP();
+    void waitForUDPSync();
 
 };
 
