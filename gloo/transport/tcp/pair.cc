@@ -82,6 +82,7 @@ namespace gloo {
           addr.sin_port = htons(5683);
           addr.sin_family = AF_INET;
           udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
+          printf("UDP FD: %d\n", udp_fd);
           if (udp_fd == -1)
             printf("Error UDP socket");
           int disable = 1;
@@ -112,16 +113,16 @@ namespace gloo {
             sync_udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
             if (sync_udp_fd == -1)
               printf("Error SYNC UDP socket");
-            srvAddr.sin_family = AF_INET;
+            srvAddrSync.sin_family = AF_INET;
             printf("Trying SYNC UDP port: %d\n", UDP_SYNC_PORT);
-            srvAddr.sin_port = htons(UDP_SYNC_PORT);
-            srvAddr.sin_addr.s_addr = INADDR_ANY;
-            if (bind(sync_udp_fd, (struct sockaddr *) &srvAddr, sizeof(srvAddr)) < 0)
+            srvAddrSync.sin_port = htons(UDP_SYNC_PORT);
+            srvAddrSync.sin_addr.s_addr = INADDR_ANY;
+            if (bind(sync_udp_fd, (struct sockaddr *) &srvAddrSync, sizeof(srvAddrSync)) < 0)
               perror("SYNC UDP bind failed\n");
-            bzero(&sockInfo, sizeof(sockInfo));
-            len = sizeof(sockInfo);
-            getsockname(sync_udp_fd, (struct sockaddr *) &sockInfo, &len);
-            printf("SYNC UDP bound to port: %d\n", ntohs(sockInfo.sin_port));
+            bzero(&sockInfoSync, sizeof(sockInfoSync));
+            len = sizeof(sockInfoSync);
+            getsockname(sync_udp_fd, (struct sockaddr *) &sockInfoSync, &len);
+            printf("SYNC UDP bound to port: %d\n", ntohs(sockInfoSync.sin_port));
           }
         }
       }
@@ -449,6 +450,10 @@ namespace gloo {
       }
 
       void Pair::syncUDP() {
+        if(getenv("SYNC_UDP") == nullptr){
+          printf("Skipping UDP sync\n");
+          return;
+        }
         int _rank = atoi(getenv("RANK"));
         if (_rank == 0)
           waitForUDPSync();
@@ -507,7 +512,7 @@ namespace gloo {
 //        ioc++;
 //        return len;
 //    }
-        int no_of_elements = 256;
+        int no_of_elements = buf->size / 4;
         coapPacketHeader.version_and_token_len = 16; // 00010000
         coapPacketHeader.code = 0;
         coapPacketHeader.message_id = 0;
@@ -536,7 +541,7 @@ namespace gloo {
 
         }
         iov[ioc].iov_base = (char *) dstBuf;
-        iov[ioc].iov_len = sizeof(int32_t) * 256;
+        iov[ioc].iov_len = sizeof(int32_t) * no_of_elements;
         len += iov[ioc].iov_len;
         ioc++;
 
@@ -588,13 +593,14 @@ namespace gloo {
           printf("Write: slot 1000\n");
           for (;;) {
             COAPPacketHeader coapPacketHeader;
-            char coapBuffer[4 * 256];
+            char coapBuffer[4 * buf->size / 4];
             memset(coapBuffer, 0, sizeof(coapBuffer));
             const auto nbytes = prepareCOAPWrite(op, buf, coapBuffer, iov.data(), ioc, coapPacketHeader);
             ssize_t myrv;
             syncUDP();
             begin = std::chrono::steady_clock::now();
-            if ((myrv = writev(udp_fd, iov.data(), ioc)) == -1) {
+            printf("Sending with UDP FD: %d\n", udp_fd);
+            if ((myrv = writev(udp_fd, iov.data(), ioc)) < 0) {
               printf("UDP write failed\n");
             } else {
               printf("\nWrote: %ld\n", myrv);
