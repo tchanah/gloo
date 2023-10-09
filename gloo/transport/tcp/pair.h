@@ -394,7 +394,8 @@ class Pair : public ::gloo::transport::Pair, public Handler {
     char *dstBuf,
     struct iovec* iov,
     int& ioc,
-    COAPPacketHeader &coapPacketHeader);
+    COAPPacketHeader &coapPacketHeader,
+    int chunk_id);
 
   void cOAPPacketToNetworkByteOrder(
           COAPPacketHeader &coapPacketHeader

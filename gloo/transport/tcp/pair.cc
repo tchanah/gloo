@@ -467,7 +467,8 @@ namespace gloo {
           char *dstBuf,
           struct iovec *iov,
           int &ioc,
-          COAPPacketHeader &coapPacketHeader) {
+          COAPPacketHeader &coapPacketHeader,
+          int chunk_id) {
         ssize_t len = 0;
         ioc = 0;
 
@@ -512,7 +513,7 @@ namespace gloo {
 //        ioc++;
 //        return len;
 //    }
-        int no_of_elements = buf->size / 4;
+        int no_of_elements = 256;
         coapPacketHeader.version_and_token_len = 16; // 00010000
         coapPacketHeader.code = 0;
         coapPacketHeader.message_id = 0;
@@ -535,7 +536,7 @@ namespace gloo {
         ioc++;
 
         for (int i = 0; i < no_of_elements; i++) {
-          int16_t int_part = (int16_t) ((int32_t *) buf->ptr)[i];
+          int16_t int_part = (int16_t) ((int32_t *) buf->ptr)[i + (256 * chunk_id)];
           ((uint16_t *) dstBuf)[2 * i] = int_part;
           ((uint16_t *) dstBuf)[2 * i + 1] = 0;
 
@@ -574,8 +575,7 @@ namespace gloo {
           return false;
         }
         NonOwningPtr<UnboundBuffer> buf;
-        std::array<struct iovec, 2> iov;
-        int ioc;
+
         ssize_t rv;
 
         const auto opcode = op.getOpcode();
@@ -587,15 +587,19 @@ namespace gloo {
             return false;
           }
         }
+        std::array<struct iovec, 2> iov;
+        int ioc;
         if (op.preamble.slot == 1000) {
+          int chunk_id = 0;
+          int total_chunks = (buf->size / 4) / 256;
           std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
 
           printf("Write: slot 1000\n");
-          for (;;) {
+          for (;chunk_id < total_chunks; chunk_id++) {
             COAPPacketHeader coapPacketHeader;
-            char coapBuffer[4 * buf->size / 4];
+            char coapBuffer[1024];
             memset(coapBuffer, 0, sizeof(coapBuffer));
-            const auto nbytes = prepareCOAPWrite(op, buf, coapBuffer, iov.data(), ioc, coapPacketHeader);
+            const auto nbytes = prepareCOAPWrite(op, buf, coapBuffer, iov.data(), ioc, coapPacketHeader, chunk_id);
             ssize_t myrv;
             syncUDP();
             begin = std::chrono::steady_clock::now();
@@ -610,15 +614,17 @@ namespace gloo {
 //          if (myrv < nbytes) {
 //              continue;
 //          }
-            printf("Wrote %zu bytes out of %zd\n", op.nwritten, nbytes);
-            break;
+            printf("UDP write: %zd of %zd\n", myrv, nbytes);
+            printf("Wrote %d of %d chunks\n", chunk_id + 1, total_chunks);
+//            break;
+            printf("Write done\n");
+            printf("Reading...\n");
+            readUDP();
+            std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
+            printf("send-recv time: %ld ms", std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count());
+            printf("\nRead done\n");
           }
-          printf("Write done\n");
-          printf("Reading...\n");
-          readUDP();
-          std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
-          printf("send-recv time: %ld ms", std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count());
-          printf("\nRead done\n");
+
           return true;
 
         }
