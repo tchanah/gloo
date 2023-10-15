@@ -401,7 +401,7 @@ class Pair : public ::gloo::transport::Pair, public Handler {
           COAPPacketHeader &coapPacketHeader
           );
 
-    void readUDP();
+    void readUDP(NonOwningPtr<UnboundBuffer>& buf, int chunk_id);
 
     void syncUDP();
     void sendSyncUDP();

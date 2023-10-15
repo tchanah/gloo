@@ -451,7 +451,7 @@ namespace gloo {
 
       void Pair::syncUDP() {
         if(getenv("SYNC_UDP") == nullptr){
-          printf("Skipping UDP sync\n");
+//          printf("Skipping UDP sync\n");
           return;
         }
         int _rank = atoi(getenv("RANK"));
@@ -603,26 +603,26 @@ namespace gloo {
             ssize_t myrv;
             syncUDP();
             begin = std::chrono::steady_clock::now();
-            printf("Sending with UDP FD: %d\n", udp_fd);
+//            printf("Sending with UDP FD: %d\n", udp_fd);
             if ((myrv = writev(udp_fd, iov.data(), ioc)) < 0) {
               printf("UDP write failed\n");
             } else {
-              printf("\nWrote: %ld\n", myrv);
+//              printf("\nWrote: %ld\n", myrv);
             }
 
             op.nwritten += myrv;
 //          if (myrv < nbytes) {
 //              continue;
 //          }
-            printf("UDP write: %zd of %zd\n", myrv, nbytes);
-            printf("Wrote %d of %d chunks\n", chunk_id + 1, total_chunks);
+//            printf("UDP write: %zd of %zd\n", myrv, nbytes);
+//            printf("Wrote %d of %d chunks\n", chunk_id + 1, total_chunks);
 //            break;
-            printf("Write done\n");
-            printf("Reading...\n");
-            readUDP();
+//            printf("Write done\n");
+//            printf("Reading...\n");
+            readUDP(buf, chunk_id);
             std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
-            printf("send-recv time: %ld ms", std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count());
-            printf("\nRead done\n");
+//            printf("send-recv time: %ld ms", std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count());
+//            printf("\nRead done\n");
           }
 
           return true;
@@ -692,7 +692,7 @@ namespace gloo {
         return true;
       }
 
-      void Pair::readUDP() {
+      void Pair::readUDP(NonOwningPtr<UnboundBuffer>& buf, int chunk_id) {
 #define MAXLINE 1046
         char buffer[MAXLINE];
 
@@ -707,14 +707,21 @@ namespace gloo {
                      MSG_WAITALL, (struct sockaddr *) &cliaddr,
                      &len);
         //buffer[n] = '\0';
-        printf("Read : %zu\n", n);
+//        printf("Read : %zu\n", n);
         if (n < 0) {
           printf("\n%s\n", strerror(errno));
         }
-        for (int i = 0; i < n / sizeof(int); i++) {
-          printf("%d, ", ((int *) buffer)[i]);
+//        for (int i = 0; i < n / sizeof(int); i++) {
+//          printf("%d, ", ((int *) buffer)[i]);
+//        }
+        int16_t *base = (int16_t *)(buffer + sizeof(COAPPacketHeader));
+//        printf("Parsing...\n");
+        int j = 0;
+        for (int i = 0; i < 512; i+=2) {
+//          printf("\n%d\n", base[i]);
+          ((int *)buf->ptr)[(256 * chunk_id) + j] = base[i];
+          j++;
         }
-        printf("\n");
 
       }
 
