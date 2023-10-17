@@ -171,7 +171,8 @@ class Pair : public ::gloo::transport::Pair, public Handler {
   Address self_;
   Address peer_;
   bool is_client_;
-
+  char *sync_udp, *log_send_recv;
+  int _env_rank;
   std::mutex m_;
   std::condition_variable cv_;
   std::map<int, Buffer*> buffers_;
@@ -401,7 +402,7 @@ class Pair : public ::gloo::transport::Pair, public Handler {
           COAPPacketHeader &coapPacketHeader
           );
 
-    void readUDP(NonOwningPtr<UnboundBuffer>& buf, int chunk_id);
+    void readUDP(NonOwningPtr<UnboundBuffer>& buf, int chunk_id, std::chrono::steady_clock::time_point begin);
 
     void syncUDP();
     void sendSyncUDP();

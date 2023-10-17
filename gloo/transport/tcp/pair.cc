@@ -70,6 +70,9 @@ namespace gloo {
             ex_(nullptr) {
 
         listen();
+        log_send_recv = getenv("LOG_SEND_RECV");
+        sync_udp = getenv("SYNC_UDP");
+        _env_rank = atoi(getenv("RANK"));
         printf("Pre UDP fd: %d", udp_fd);
         if (udp_fd == 0) {
           struct sockaddr_in addr, srvAddr, sockInfo;
@@ -108,7 +111,7 @@ namespace gloo {
             perror("setsockopt failed");
           }
 
-          if(atoi(getenv("RANK")) == 0){
+          if(_env_rank == 0){
             struct sockaddr_in srvAddrSync, sockInfoSync;
             sync_udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
             if (sync_udp_fd == -1)
@@ -403,16 +406,16 @@ namespace gloo {
       }
 
       void Pair::waitForUDPSync() {
-        const char *world_size = getenv("WORLD_SIZE");
-        int _world_size = atoi(world_size);
+//        const char *world_size = getenv("WORLD_SIZE");
+        int _world_size = 8;
 
         for (int i = 0; i < _world_size - 1; i++) {
 #define MAXLINE 1046
           char buffer[MAXLINE];
           int recved_rank;
-          memset(buffer, 0, MAXLINE);
+//          memset(buffer, 0, MAXLINE);
           struct sockaddr_in cliaddr;
-          memset(&cliaddr, 0, sizeof(cliaddr));
+//          memset(&cliaddr, 0, sizeof(cliaddr));
           ssize_t n;
 
           socklen_t len = sizeof(cliaddr);  //len is value/result
@@ -421,17 +424,15 @@ namespace gloo {
                        0, (struct sockaddr *) &cliaddr,
                        &len);
           buffer[n] = '\0';
-          printf("Read : %zu\n", n);
+//          printf("Read : %zu\n", n);
           if (n < 0) {
             printf("\n%s\n", strerror(errno));
           }
-          printf("Recved sync from: %d\n", recved_rank);
+//          printf("Recved sync from: %d\n", recved_rank);
         }
       }
 
       void Pair::sendSyncUDP() {
-        const char *rank = getenv("RANK");
-        int _rank = atoi(rank);
         struct sockaddr_in addr, srvAddr, sockInfo;
         memset(&addr, 0, sizeof(addr));
         const char *master_host = getenv("MASTER_ADDR");
@@ -442,7 +443,7 @@ namespace gloo {
         int _udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
         if (_udp_fd == -1)
           printf("Error UDP socket");
-        ssize_t n = sendto(_udp_fd, &_rank, sizeof(int), 0, (struct sockaddr *) &addr,
+        ssize_t n = sendto(_udp_fd, &_env_rank, sizeof(int), 0, (struct sockaddr *) &addr,
                sizeof(addr));
 
         printf("Sent sync bytes: %zd\n", n);
@@ -450,12 +451,11 @@ namespace gloo {
       }
 
       void Pair::syncUDP() {
-        if(getenv("SYNC_UDP") == nullptr){
+        if(sync_udp == nullptr){
 //          printf("Skipping UDP sync\n");
           return;
         }
-        int _rank = atoi(getenv("RANK"));
-        if (_rank == 0)
+        if (_env_rank == 0)
           waitForUDPSync();
         else
           sendSyncUDP();
@@ -594,14 +594,16 @@ namespace gloo {
           int total_chunks = (buf->size / 4) / 256;
           std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
 
-          printf("Write: slot 1000\n");
+//          printf("Write: slot 1000\n");
           for (;chunk_id < total_chunks; chunk_id++) {
             COAPPacketHeader coapPacketHeader;
             char coapBuffer[1024];
             memset(coapBuffer, 0, sizeof(coapBuffer));
             const auto nbytes = prepareCOAPWrite(op, buf, coapBuffer, iov.data(), ioc, coapPacketHeader, chunk_id);
             ssize_t myrv;
-            syncUDP();
+            if(_env_rank == 0)
+              syncUDP();
+
             begin = std::chrono::steady_clock::now();
 //            printf("Sending with UDP FD: %d\n", udp_fd);
             if ((myrv = writev(udp_fd, iov.data(), ioc)) < 0) {
@@ -609,7 +611,8 @@ namespace gloo {
             } else {
 //              printf("\nWrote: %ld\n", myrv);
             }
-
+            if(_env_rank != 0)
+              syncUDP();
             op.nwritten += myrv;
 //          if (myrv < nbytes) {
 //              continue;
@@ -619,9 +622,8 @@ namespace gloo {
 //            break;
 //            printf("Write done\n");
 //            printf("Reading...\n");
-            readUDP(buf, chunk_id);
-            std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
-//            printf("send-recv time: %ld ms", std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count());
+            readUDP(buf, chunk_id, begin);
+
 //            printf("\nRead done\n");
           }
 
@@ -692,7 +694,7 @@ namespace gloo {
         return true;
       }
 
-      void Pair::readUDP(NonOwningPtr<UnboundBuffer>& buf, int chunk_id) {
+      void Pair::readUDP(NonOwningPtr<UnboundBuffer>& buf, int chunk_id, std::chrono::steady_clock::time_point begin) {
 #define MAXLINE 1046
         char buffer[MAXLINE];
 
@@ -706,6 +708,10 @@ namespace gloo {
         n = recvfrom(udp_fd, (char *) buffer, MAXLINE,
                      MSG_WAITALL, (struct sockaddr *) &cliaddr,
                      &len);
+        if(log_send_recv != nullptr) {
+          std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
+          printf("send-recv time: %ld us\n", std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count());
+        }
         //buffer[n] = '\0';
 //        printf("Read : %zu\n", n);
         if (n < 0) {
@@ -1264,11 +1270,11 @@ namespace gloo {
 
         // If an earlier operation hasn't finished transmitting,
         // add this operation to the transmit queue.
-        printf("sendAsyncMode: Slot: %zu and tx queue empty: %d\n", op.preamble.slot, tx_.empty());
+//        printf("sendAsyncMode: Slot: %zu and tx queue empty: %d\n", op.preamble.slot, tx_.empty());
         if (op.preamble.slot == 1000) {
-          printf("sendAsyncMode: Writing\n");
+//          printf("sendAsyncMode: Writing\n");
           if (write(op)) {
-            printf("Write successful.\n");
+//            printf("Write successful.\n");
           } else {
             printf("Write not successful.\n");
           }
@@ -1367,7 +1373,7 @@ namespace gloo {
         std::unique_lock<std::mutex> lock(m_);
         throwIfException();
         if (slot == 1000) {
-          printf("Slot 1000, sending... %zu bytes\n", nbytes);
+//          printf("Slot 1000, sending... %zu bytes\n", nbytes);
           sendUnboundBuffer(std::move(buf), slot, offset, nbytes);
           return;
         }

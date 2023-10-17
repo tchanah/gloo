@@ -121,7 +121,7 @@ void allreduce(const detail::AllreduceOptionsImpl& opts) {
   // Initialize local reduction and broadcast functions.
   // Note that these are a no-op if only a single output is specified
   // and is used as both input and output.
-  printf("\nElement size: %ld\n", opts.elementSize);
+//  printf("\nElement size: %ld\n", opts.elementSize);
   const auto reduceInputs =
       genLocalReduceFunction(in, out, opts.elementSize, opts.reduce);
   const auto broadcastOutputs = genLocalBroadcastFunction(out);
@@ -136,7 +136,7 @@ void allreduce(const detail::AllreduceOptionsImpl& opts) {
   switch (opts.algorithm) {
     case detail::AllreduceOptionsImpl::UNSPECIFIED:
     case detail::AllreduceOptionsImpl::RING:
-      printf("Ring\n");
+//      printf("Ring\n");
       ring(opts, reduceInputs, broadcastOutputs);
       break;
     case detail::AllreduceOptionsImpl::BCUBE:
@@ -152,7 +152,7 @@ void ring(
     const detail::AllreduceOptionsImpl& opts,
     ReduceRangeFunction reduceInputs,
     BroadcastRangeFunction broadcastOutputs) {
-    printf("All ring reduce default\n");
+//    printf("All ring reduce default\n");
   const auto& context = opts.context;
   const std::vector<std::unique_ptr<transport::UnboundBuffer>>& out = opts.out;
   const auto slot = Slot::build(kAllreduceSlotPrefix, opts.tag);
@@ -171,9 +171,9 @@ void ring(
           " (this process) and rank " + std::to_string(sendRank));
 
   // UDP send
-    printf("Initiating UDP send\n");
+//    printf("Initiating UDP send\n");
   out[0]->send(sendRank, 1000   , 0, std::numeric_limits<size_t>::max());
-    printf("Done UDP send\n");
+//    printf("Done UDP send\n");
     return;
 
 
