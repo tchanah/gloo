@@ -8,8 +8,8 @@
 
 #include "gloo/transport/tcp/pair.h"
 
-#include <array>
 #include <algorithm>
+#include <array>
 #include <sstream>
 
 #include <errno.h>
@@ -452,7 +452,7 @@ namespace gloo {
 
       void Pair::syncUDP() {
         if(sync_udp == nullptr){
-//          printf("Skipping UDP sync\n");
+          printf("Skipping UDP sync\n");
           return;
         }
         if (_env_rank == 0)
@@ -1286,7 +1286,7 @@ namespace gloo {
           return;
         }
 
-        // Write in place without checking socket for writeability.
+        // Write in place without checking socket for writability.
         // This is the fast path.
         if (write(op)) {
           return;
@@ -1357,7 +1357,7 @@ namespace gloo {
         return std::unique_ptr<::gloo::transport::Buffer>(buffer);
       }
 
-// Send from the specified buffer t%zuremote side of pair.
+// Send from the specified buffer to remote side of pair.
       void Pair::send(
           transport::UnboundBuffer *tbuf,
           uint64_t slot,
