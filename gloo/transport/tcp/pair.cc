@@ -456,8 +456,10 @@ namespace gloo {
           return;
         }
         if (_env_rank == 0)
+          printf("Rank %zd: Waiting for Sync\n", _env_rank);
           waitForUDPSync();
         else
+          printf("Rank %zd: Waiting for Sync\n", _env_rank);
           sendSyncUDP();
       }
 
