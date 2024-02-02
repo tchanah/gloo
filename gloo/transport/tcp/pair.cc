@@ -455,12 +455,14 @@ namespace gloo {
           printf("Skipping UDP sync\n");
           return;
         }
-        if (_env_rank == 0)
+        if (_env_rank == 0){
           printf("Rank %d: Waiting for Sync\n", _env_rank);
           waitForUDPSync();
-        else
+        }
+        else {
           printf("Rank %d: Waiting for Sync\n", _env_rank);
           sendSyncUDP();
+        }
       }
 
       ssize_t Pair::prepareCOAPWrite(
