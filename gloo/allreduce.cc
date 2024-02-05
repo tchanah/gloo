@@ -121,7 +121,6 @@ void allreduce(const detail::AllreduceOptionsImpl& opts) {
   // Initialize local reduction and broadcast functions.
   // Note that these are a no-op if only a single output is specified
   // and is used as both input and output.
-//  printf("\nElement size: %ld\n", opts.elementSize);
   const auto reduceInputs =
       genLocalReduceFunction(in, out, opts.elementSize, opts.reduce);
   const auto broadcastOutputs = genLocalBroadcastFunction(out);
@@ -136,11 +135,9 @@ void allreduce(const detail::AllreduceOptionsImpl& opts) {
   switch (opts.algorithm) {
     case detail::AllreduceOptionsImpl::UNSPECIFIED:
     case detail::AllreduceOptionsImpl::RING:
-//      printf("Ring\n");
       ring(opts, reduceInputs, broadcastOutputs);
       break;
     case detail::AllreduceOptionsImpl::BCUBE:
-        printf("Bcube\n");
       bcube(opts, reduceInputs, broadcastOutputs);
       break;
     default:
@@ -152,7 +149,6 @@ void ring(
     const detail::AllreduceOptionsImpl& opts,
     ReduceRangeFunction reduceInputs,
     BroadcastRangeFunction broadcastOutputs) {
-//    printf("All ring reduce default\n");
   const auto& context = opts.context;
   const std::vector<std::unique_ptr<transport::UnboundBuffer>>& out = opts.out;
   const auto slot = Slot::build(kAllreduceSlotPrefix, opts.tag);

@@ -55,8 +55,6 @@ class AllreduceRing : public Algorithm {
       leftPair->createSendBuffer(notificationSlot, &dummy_, sizeof(dummy_));
     recvNotificationBuf_ =
       rightPair->createRecvBuffer(notificationSlot, &dummy_, sizeof(dummy_));
-      printf("\nIniting allreduce ring\n");
-
   }
 
   virtual ~AllreduceRing() {
@@ -69,7 +67,6 @@ class AllreduceRing : public Algorithm {
   }
 
   void run() {
-  printf("\nRunning allreduce ring\n");
     if (count_ == 0) {
       return;
     }

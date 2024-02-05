@@ -67,12 +67,10 @@ CudaAllreduceRing<T, W>::CudaAllreduceRing(
     leftPair->createSendBuffer(notificationSlot, &dummy_, sizeof(dummy_));
   recvNotificationBuf_ =
     rightPair->createRecvBuffer(notificationSlot, &dummy_, sizeof(dummy_));
-    printf("Cuda all reduce ring init");
 }
 
 template <typename T, typename W>
 void CudaAllreduceRing<T, W>::run() {
-printf("Cuda all reduce ring run");
   CudaDeviceGuard guard;
   CudaStream& stream = *scratchStream_;
 
