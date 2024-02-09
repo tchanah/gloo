@@ -53,8 +53,8 @@ namespace gloo {
 #define UDP_SYNC_PORT 8000
 
       Pair::Pair(
-          Context *context,
-          Device *device,
+          Context* context,
+          Device* device,
           int rank,
           std::chrono::milliseconds timeout)
           : context_(context),
@@ -80,8 +80,7 @@ namespace gloo {
           const char *env_fpga_host = getenv("FPGA_HOST");
           printf("FPGA_HOST: %s\n", env_fpga_host);
           addr.sin_addr.s_addr = inet_addr(env_fpga_host);
-
-//  memcpy(&addr, sin, attr.ai_addrlen);
+          
           addr.sin_port = htons(5683);
           addr.sin_family = AF_INET;
           udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -94,9 +93,6 @@ namespace gloo {
           }
 
           srvAddr.sin_family = AF_INET;
-//          int _rank = atoi(getenv("RANK"));
-//          printf("Trying UDP port: %d\n", UDP_SYNC_PORT + _rank);
-//          srvAddr.sin_port = htons(UDP_SYNC_PORT + _rank);
           srvAddr.sin_addr.s_addr = INADDR_ANY;
           if (bind(udp_fd, (struct sockaddr *) &srvAddr, sizeof(srvAddr)) < 0)
             perror("UDP bind failed\n");
@@ -158,11 +154,11 @@ namespace gloo {
         }
       }
 
-      const Address &Pair::address() const {
+      const Address& Pair::address() const {
         return self_;
       }
 
-      void Pair::connect(const std::vector<char> &bytes) {
+      void Pair::connect(const std::vector<char>& bytes) {
         auto peer = Address(bytes);
         connect(peer);
       }
@@ -200,7 +196,7 @@ namespace gloo {
           setSocketBlocking(fd_, true);
 
           // If the pair was still flushing writes, finish them.
-          for (auto &op: tx_) {
+          for (auto& op : tx_) {
             auto rv = write(op);
             if (!rv) {
               GLOO_ENFORCE(
@@ -226,11 +222,6 @@ namespace gloo {
           signalAndThrowException(GLOO_ERROR_MSG("socket: ", strerror(errno)));
         }
 
-        // udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
-        //   if (udp_fd == -1) {
-        //       signalAndThrowException(GLOO_ERROR_MSG("socket: ", strerror(errno)));
-        //   }
-
         // Set SO_REUSEADDR to signal that reuse of the listening port is OK.
         int on = 1;
         rv = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
@@ -244,10 +235,6 @@ namespace gloo {
           ::close(fd);
           signalAndThrowException(GLOO_ERROR_MSG("bind: ", strerror(errno)));
         }
-
-//  const struct sockaddr_in *sin = (const struct sockaddr_in *)&(attr.ai_addr);
-
-//  rv = bind(udp_fd, (struct sockaddr *)addr, sizeof(addr));
 
         // listen(2) on socket
         fd_ = fd;
@@ -353,16 +340,16 @@ namespace gloo {
       }
 
       ssize_t Pair::prepareWrite(
-          Op &op,
-          const NonOwningPtr<UnboundBuffer> &buf,
-          struct iovec *iov,
-          int &ioc) {
+          Op& op,
+          const NonOwningPtr<UnboundBuffer>& buf,
+          struct iovec* iov,
+          int& ioc) {
         ssize_t len = 0;
         ioc = 0;
 
         // Include preamble if necessary
         if (op.nwritten < sizeof(op.preamble)) {
-          iov[ioc].iov_base = ((char *) &op.preamble) + op.nwritten;
+          iov[ioc].iov_base = ((char*)&op.preamble) + op.nwritten;
           iov[ioc].iov_len = sizeof(op.preamble) - op.nwritten;
           len += iov[ioc].iov_len;
           ioc++;
@@ -372,7 +359,7 @@ namespace gloo {
 
         // Send data to a remote buffer
         if (opcode == Op::SEND_BUFFER) {
-          char *ptr = (char *) op.buf->ptr_;
+          char* ptr = (char*)op.buf->ptr_;
           size_t offset = op.preamble.offset;
           size_t nbytes = op.preamble.length;
           if (op.nwritten > sizeof(op.preamble)) {
@@ -388,7 +375,7 @@ namespace gloo {
 
         // Send data to a remote unbound buffer
         if (opcode == Op::SEND_UNBOUND_BUFFER) {
-          char *ptr = (char *) buf->ptr;
+          char* ptr = (char*)buf->ptr;
           size_t offset = op.offset;
           size_t nbytes = op.nbytes;
           if (op.nwritten > sizeof(op.preamble)) {
@@ -406,16 +393,11 @@ namespace gloo {
       }
 
       void Pair::waitForUDPSync() {
-//        const char *world_size = getenv("WORLD_SIZE");
-        int _world_size = 8;
+        int _world_size = atoi(getenv("WORLD_SIZE"));
 
         for (int i = 0; i < _world_size - 1; i++) {
-#define MAXLINE 1046
-          char buffer[MAXLINE];
           int recved_rank;
-//          memset(buffer, 0, MAXLINE);
           struct sockaddr_in cliaddr;
-//          memset(&cliaddr, 0, sizeof(cliaddr));
           ssize_t n;
 
           socklen_t len = sizeof(cliaddr);  //len is value/result
@@ -423,17 +405,14 @@ namespace gloo {
           n = recvfrom(sync_udp_fd, &recved_rank, sizeof(int),
                        0, (struct sockaddr *) &cliaddr,
                        &len);
-          buffer[n] = '\0';
-//          printf("Read : %zu\n", n);
           if (n < 0) {
             printf("\n%s\n", strerror(errno));
           }
-//          printf("Recved sync from: %d\n", recved_rank);
         }
       }
 
       void Pair::sendSyncUDP() {
-        struct sockaddr_in addr, srvAddr, sockInfo;
+        struct sockaddr_in addr;
         memset(&addr, 0, sizeof(addr));
         const char *master_host = getenv("MASTER_ADDR");
         printf("Master host: %s\n", master_host);
@@ -447,20 +426,16 @@ namespace gloo {
                sizeof(addr));
 
         printf("Sent sync bytes: %zd\n", n);
-
       }
 
       void Pair::syncUDP() {
         if(sync_udp == nullptr){
-          printf("Skipping UDP sync\n");
           return;
         }
         if (_env_rank == 0){
-          printf("Rank %d: Waiting for Sync\n", _env_rank);
           waitForUDPSync();
         }
         else {
-          printf("Rank %d: Waiting for Sync\n", _env_rank);
           sendSyncUDP();
         }
       }
@@ -472,51 +447,10 @@ namespace gloo {
           struct iovec *iov,
           int &ioc,
           COAPPacketHeader &coapPacketHeader,
-          int chunk_id) {
+          int chunk_id
+      ) {
         ssize_t len = 0;
         ioc = 0;
-
-        // Include preamble if necessary
-//    if (op.nwritten < sizeof(op.preamble)) {
-//        iov[ioc].iov_base = ((char*)&op.preamble) + op.nwritten;
-//        iov[ioc].iov_len = sizeof(op.preamble) - op.nwritten;
-//        len += iov[ioc].iov_len;
-//        ioc++;
-//    }
-//
-//    auto opcode = op.getOpcode();
-//
-//    // Send data to a remote buffer
-//    if (opcode == Op::SEND_BUFFER) {
-//        char* ptr = (char*)op.buf->ptr_;
-//        size_t offset = op.preamble.offset;
-//        size_t nbytes = op.preamble.length;
-//        if (op.nwritten > sizeof(op.preamble)) {
-//            offset += op.nwritten - sizeof(op.preamble);
-//            nbytes -= op.nwritten - sizeof(op.preamble);
-//        }
-//        iov[ioc].iov_base = ptr + offset;
-//        iov[ioc].iov_len = nbytes;
-//        len += iov[ioc].iov_len;
-//        ioc++;
-//        return len;
-//    }
-//
-//    // Send data to a remote unbound buffer
-//    if (opcode == Op::SEND_UNBOUND_BUFFER) {
-//        char* ptr = (char*)buf->ptr;
-//        size_t offset = op.offset;
-//        size_t nbytes = op.nbytes;
-//        if (op.nwritten > sizeof(op.preamble)) {
-//            offset += op.nwritten - sizeof(op.preamble);
-//            nbytes -= op.nwritten - sizeof(op.preamble);
-//        }
-//        iov[ioc].iov_base = ptr + offset;
-//        iov[ioc].iov_len = nbytes;
-//        len += iov[ioc].iov_len;
-//        ioc++;
-//        return len;
-//    }
         int no_of_elements = 256;
         coapPacketHeader.version_and_token_len = 16; // 00010000
         coapPacketHeader.code = 0;
@@ -572,14 +506,13 @@ namespace gloo {
 // In either case, the lock is held and the write function
 // below inherits it.
 //
-      bool Pair::write(Op &op) {
-        //printf("Write 1");
-
+      bool Pair::write(Op& op) {
         if (state_ == CLOSED) {
           return false;
         }
         NonOwningPtr<UnboundBuffer> buf;
-
+        std::array<struct iovec, 2> iov;
+        int ioc;
         ssize_t rv;
 
         const auto opcode = op.getOpcode();
@@ -591,14 +524,12 @@ namespace gloo {
             return false;
           }
         }
-        std::array<struct iovec, 2> iov;
-        int ioc;
+        
         if (op.preamble.slot == 1000) {
           int chunk_id = 0;
           int total_chunks = (buf->size / 4) / 256;
           std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
-
-//          printf("Write: slot 1000\n");
+          
           for (;chunk_id < total_chunks; chunk_id++) {
             COAPPacketHeader coapPacketHeader;
             char coapBuffer[1024];
@@ -609,37 +540,22 @@ namespace gloo {
               syncUDP();
 
             begin = std::chrono::steady_clock::now();
-//            printf("Sending with UDP FD: %d\n", udp_fd);
-            if ((myrv = writev(udp_fd, iov.data(), ioc)) < 0) {
+            if ((myrv = writev(udp_fd, iov.data(), ioc)) < 0)
               printf("UDP write failed\n");
-            } else {
-//              printf("\nWrote: %ld\n", myrv);
-            }
             if(_env_rank != 0)
               syncUDP();
             op.nwritten += myrv;
-//          if (myrv < nbytes) {
-//              continue;
-//          }
-//            printf("UDP write: %zd of %zd\n", myrv, nbytes);
-//            printf("Wrote %d of %d chunks\n", chunk_id + 1, total_chunks);
-//            break;
-//            printf("Write done\n");
-//            printf("Reading...\n");
             readUDP(buf, chunk_id, begin);
-
-//            printf("\nRead done\n");
           }
 
           return true;
-
         }
 
         for (;;) {
           const auto nbytes = prepareWrite(op, buf, iov.data(), ioc);
+
           // Write
           rv = writev(fd_, iov.data(), ioc);
-
           if (rv == -1) {
             if (errno == EAGAIN) {
               if (sync_) {
@@ -716,23 +632,17 @@ namespace gloo {
           std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
           printf("send-recv time: %ld us\n", std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count());
         }
-        //buffer[n] = '\0';
-//        printf("Read : %zu\n", n);
+        
         if (n < 0) {
           printf("\n%s\n", strerror(errno));
         }
-//        for (int i = 0; i < n / sizeof(int); i++) {
-//          printf("%d, ", ((int *) buffer)[i]);
-//        }
+        
         int16_t *base = (int16_t *)(buffer + sizeof(COAPPacketHeader));
-//        printf("Parsing...\n");
         int j = 0;
         for (int i = 0; i < 512; i+=2) {
-//          printf("\n%d\n", base[i]);
           ((int *)buf->ptr)[(256 * chunk_id) + j] = base[i];
           j++;
         }
-
       }
 
       void Pair::writeComplete(const Op &op, NonOwningPtr<UnboundBuffer> &buf,
@@ -761,15 +671,15 @@ namespace gloo {
 // only be the case for unbound buffers).
 //
       ssize_t Pair::prepareRead(
-          Op &op,
-          NonOwningPtr<UnboundBuffer> &buf,
-          struct iovec &iov) {
+          Op& op,
+          NonOwningPtr<UnboundBuffer>& buf,
+          struct iovec& iov) {
         iov.iov_base = nullptr;
         iov.iov_len = 0;
 
         // Read preamble
         if (op.nread < sizeof(op.preamble)) {
-          iov.iov_base = ((char *) &op.preamble) + op.nread;
+          iov.iov_base = ((char*)&op.preamble) + op.nread;
           iov.iov_len = sizeof(op.preamble) - op.nread;
           return iov.iov_len;
         }
@@ -787,7 +697,7 @@ namespace gloo {
             }
           }
 
-          iov.iov_base = ((char *) op.buf->ptr_) + offset + op.preamble.roffset;
+          iov.iov_base = ((char*)op.buf->ptr_) + offset + op.preamble.roffset;
           iov.iov_len = op.preamble.length - offset;
 
           // Bytes read must be in bounds for target buffer
@@ -800,7 +710,7 @@ namespace gloo {
           if (!op.ubuf) {
             auto it = localPendingRecv_.find(op.preamble.slot);
             GLOO_ENFORCE(it != localPendingRecv_.end());
-            std::deque<UnboundBufferOp> &queue = it->second;
+            std::deque<UnboundBufferOp>& queue = it->second;
             GLOO_ENFORCE(!queue.empty());
             std::tie(op.ubuf, op.offset, op.nbytes) = queue.front();
             queue.pop_front();
@@ -817,7 +727,7 @@ namespace gloo {
             return -1;
           }
 
-          iov.iov_base = ((char *) buf->ptr) + op.offset + offset;
+          iov.iov_base = ((char*)buf->ptr) + op.offset + offset;
           iov.iov_len = op.preamble.length - offset;
 
           // Bytes read must be in bounds for target buffer
@@ -947,8 +857,8 @@ namespace gloo {
 
 // This function is called upon receiving a message from the peer
 // indicating it has a pending send operation.
-      void Pair::handleRemotePendingSend(const Op &op) {
-        const auto &slot = op.preamble.slot;
+      void Pair::handleRemotePendingSend(const Op& op) {
+        const auto& slot = op.preamble.slot;
 
         // Acquire context lock through mutator.
         Context::Mutator mutator(*context_, slot, rank_);
@@ -980,14 +890,14 @@ namespace gloo {
 
 // This function is called upon receiving a message from the peer
 // indicating it has a pending receive operation.
-      void Pair::handleRemotePendingRecv(const Op &op) {
-        const auto &slot = op.preamble.slot;
+      void Pair::handleRemotePendingRecv(const Op& op) {
+        const auto& slot = op.preamble.slot;
 
         // Find local pending send and execute it.
         // Nothing to do if there are none.
         auto it = localPendingSend_.find(slot);
         if (it != localPendingSend_.end()) {
-          std::deque<UnboundBufferOp> &queue = it->second;
+          std::deque<UnboundBufferOp>& queue = it->second;
           GLOO_ENFORCE(!queue.empty());
           WeakNonOwningPtr<UnboundBuffer> buf;
           size_t offset;
@@ -1055,7 +965,7 @@ namespace gloo {
           GLOO_ENFORCE(
               !tx_.empty(), "tx_ cannot be empty because EPOLLOUT happened");
           while (!tx_.empty()) {
-            auto &op = tx_.front();
+            auto& op = tx_.front();
             if (!write(op)) {
               // Write did not complete; wait for epoll.
               break;
@@ -1147,7 +1057,7 @@ namespace gloo {
       }
 
 // getBuffer must only be called when holding lock.
-      Buffer *Pair::getBuffer(int slot) {
+      Buffer* Pair::getBuffer(int slot) {
         for (;;) {
           auto it = buffers_.find(slot);
           if (it == buffers_.end()) {
@@ -1168,7 +1078,7 @@ namespace gloo {
         }
       }
 
-      void Pair::registerBuffer(Buffer *buf) {
+      void Pair::registerBuffer(Buffer* buf) {
         std::lock_guard<std::mutex> lock(m_);
         GLOO_ENFORCE(
             buffers_.find(buf->slot_) == buffers_.end(),
@@ -1178,7 +1088,7 @@ namespace gloo {
         cv_.notify_all();
       }
 
-      void Pair::unregisterBuffer(Buffer *buf) {
+      void Pair::unregisterBuffer(Buffer* buf) {
         std::lock_guard<std::mutex> lock(m_);
         buffers_.erase(buf->slot_);
       }
@@ -1228,7 +1138,7 @@ namespace gloo {
       }
 
       void Pair::waitUntilConnected(
-          std::unique_lock<std::mutex> &lock,
+          std::unique_lock<std::mutex>& lock,
           bool useTimeout) {
         auto pred = [&] {
           throwIfException();
@@ -1257,7 +1167,7 @@ namespace gloo {
 // Sends contents of operation to the remote side of the pair.
 // The pair's mutex is held when this function is called.
 // Only applicable to synchronous mode. May block.
-      void Pair::sendSyncMode(Op &op) {
+      void Pair::sendSyncMode(Op& op) {
         GLOO_ENFORCE(sync_);
         auto rv = write(op);
         if (!rv) {
@@ -1269,7 +1179,7 @@ namespace gloo {
 // Sends contents of operation to the remote side of the pair.
 // The pair's mutex is held when this function is called.
 // Only applicable to asynchronous mode. Never blocks.
-      void Pair::sendAsyncMode(Op &op) {
+      void Pair::sendAsyncMode(Op& op) {
         GLOO_ENFORCE(!sync_);
 
         // If an earlier operation hasn't finished transmitting,
@@ -1304,7 +1214,7 @@ namespace gloo {
         device_->registerDescriptor(fd_, EPOLLIN | EPOLLOUT, this);
       }
 
-      void Pair::send(Op &op) {
+      void Pair::send(Op& op) {
         std::unique_lock<std::mutex> lock(m_);
         throwIfException();
         verifyConnected();
@@ -1346,7 +1256,7 @@ namespace gloo {
 
       std::unique_ptr<::gloo::transport::Buffer> Pair::createSendBuffer(
           int slot,
-          void *ptr,
+          void* ptr,
           size_t size) {
         auto buffer = new Buffer(this, slot, ptr, size);
         return std::unique_ptr<::gloo::transport::Buffer>(buffer);
@@ -1354,7 +1264,7 @@ namespace gloo {
 
       std::unique_ptr<::gloo::transport::Buffer> Pair::createRecvBuffer(
           int slot,
-          void *ptr,
+          void* ptr,
           size_t size) {
         auto buffer = new Buffer(this, slot, ptr, size);
         registerBuffer(buffer);
@@ -1363,11 +1273,11 @@ namespace gloo {
 
 // Send from the specified buffer to remote side of pair.
       void Pair::send(
-          transport::UnboundBuffer *tbuf,
+          transport::UnboundBuffer* tbuf,
           uint64_t slot,
           size_t offset,
           size_t nbytes) {
-        auto buf = static_cast<tcp::UnboundBuffer *>(tbuf)->getWeakNonOwningPtr();
+        auto buf = static_cast<tcp::UnboundBuffer*>(tbuf)->getWeakNonOwningPtr();
 
         if (nbytes > 0) {
           GLOO_ENFORCE_LE(offset, tbuf->size);
@@ -1377,7 +1287,6 @@ namespace gloo {
         std::unique_lock<std::mutex> lock(m_);
         throwIfException();
         if (slot == 1000) {
-//          printf("Slot 1000, sending... %zu bytes\n", nbytes);
           sendUnboundBuffer(std::move(buf), slot, offset, nbytes);
           return;
         }
@@ -1401,11 +1310,11 @@ namespace gloo {
 
 // Receive into the specified buffer from the remote side of pair.
       void Pair::recv(
-          transport::UnboundBuffer *tbuf,
+          transport::UnboundBuffer* tbuf,
           uint64_t slot,
           size_t offset,
           size_t nbytes) {
-        auto buf = static_cast<tcp::UnboundBuffer *>(tbuf)->getWeakNonOwningPtr();
+        auto buf = static_cast<tcp::UnboundBuffer*>(tbuf)->getWeakNonOwningPtr();
 
         if (nbytes > 0) {
           GLOO_ENFORCE_LE(offset, tbuf->size);
@@ -1430,11 +1339,11 @@ namespace gloo {
       }
 
       bool Pair::tryRecv(
-          transport::UnboundBuffer *tbuf,
+          transport::UnboundBuffer* tbuf,
           uint64_t slot,
           size_t offset,
           size_t nbytes) {
-        auto buf = static_cast<tcp::UnboundBuffer *>(tbuf)->getWeakNonOwningPtr();
+        auto buf = static_cast<tcp::UnboundBuffer*>(tbuf)->getWeakNonOwningPtr();
 
         if (nbytes > 0) {
           GLOO_ENFORCE_LE(offset, tbuf->size);
@@ -1497,7 +1406,7 @@ namespace gloo {
         }
       }
 
-      std::exception_ptr Pair::signalExceptionExternal(const std::string &msg) {
+      std::exception_ptr Pair::signalExceptionExternal(const std::string& msg) {
         std::lock_guard<std::mutex> lock(m_);
 
         // This function may be called by a buffer upon timing out waiting
@@ -1511,7 +1420,7 @@ namespace gloo {
         return ex_;
       }
 
-      void Pair::signalException(const std::string &msg) {
+      void Pair::signalException(const std::string& msg) {
         signalException(std::make_exception_ptr(::gloo::IoException(msg)));
       }
 
@@ -1524,15 +1433,15 @@ namespace gloo {
         }
 
         // Loop through posted send operations.
-        for (auto &op: tx_) {
+        for (auto& op : tx_) {
           if (op.buf != nullptr) {
             op.buf->signalException(ex);
           }
         }
 
         // Loop through pending send operations.
-        for (auto &it: localPendingSend_) {
-          for (auto &op: it.second) {
+        for (auto& it : localPendingSend_) {
+          for (auto& op : it.second) {
             NonOwningPtr<UnboundBuffer> buf(std::get<0>(op));
             if (buf) {
               buf->signalException(ex);
@@ -1541,8 +1450,8 @@ namespace gloo {
         }
 
         // Loop through pending recv operations.
-        for (auto &it: localPendingRecv_) {
-          for (auto &op: it.second) {
+        for (auto& it : localPendingRecv_) {
+          for (auto& op : it.second) {
             NonOwningPtr<UnboundBuffer> buf(std::get<0>(op));
             if (buf) {
               buf->signalException(ex);
@@ -1561,7 +1470,7 @@ namespace gloo {
         changeState(CLOSED);
       }
 
-      void Pair::signalAndThrowException(const std::string &msg) {
+      void Pair::signalAndThrowException(const std::string& msg) {
         signalAndThrowException(std::make_exception_ptr(::gloo::IoException(msg)));
       }
 

@@ -402,12 +402,11 @@ class Pair : public ::gloo::transport::Pair, public Handler {
           COAPPacketHeader &coapPacketHeader
           );
 
-    void readUDP(NonOwningPtr<UnboundBuffer>& buf, int chunk_id, std::chrono::steady_clock::time_point begin);
+  void readUDP(NonOwningPtr<UnboundBuffer>& buf, int chunk_id, std::chrono::steady_clock::time_point begin);
 
-    void syncUDP();
-    void sendSyncUDP();
-    void waitForUDPSync();
-
+  void syncUDP();
+  void sendSyncUDP();
+  void waitForUDPSync();
 };
 
 } // namespace tcp
