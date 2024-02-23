@@ -415,7 +415,6 @@ namespace gloo {
         struct sockaddr_in addr;
         memset(&addr, 0, sizeof(addr));
         const char *master_host = getenv("MASTER_ADDR");
-        printf("Master host: %s\n", master_host);
         addr.sin_addr.s_addr = inet_addr(master_host);
         addr.sin_port = htons(UDP_SYNC_PORT);
         addr.sin_family = AF_INET;
@@ -424,8 +423,6 @@ namespace gloo {
           printf("Error UDP socket");
         ssize_t n = sendto(_udp_fd, &_env_rank, sizeof(int), 0, (struct sockaddr *) &addr,
                sizeof(addr));
-
-        printf("Sent sync bytes: %zd\n", n);
       }
 
       void Pair::syncUDP() {
