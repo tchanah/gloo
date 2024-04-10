@@ -427,12 +427,15 @@ namespace gloo {
 
       void Pair::syncUDP() {
         if(sync_udp == nullptr){
+          printf("No Sync");
           return;
         }
         if (_env_rank == 0){
+          printf("Rank0 Wait");
           waitForUDPSync();
         }
         else {
+          printf("Other Rank Send");
           sendSyncUDP();
         }
       }
@@ -541,7 +544,7 @@ namespace gloo {
 
             if(_env_rank != 0)
               syncUDP();
-              
+
             op.nwritten += myrv;
             readUDP(buf, chunk_id);
           }
