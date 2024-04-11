@@ -49,8 +49,6 @@ namespace gloo {
       } // namespace
 
       int Pair::udp_fd = 0;
-      int Pair::sync_udp_fd = 0;
-#define UDP_SYNC_PORT 8000
 
       Pair::Pair(
           Context* context,
@@ -70,7 +68,6 @@ namespace gloo {
             ex_(nullptr) {
 
         listen();
-        sync_udp = getenv("SYNC_UDP");
         _env_rank = atoi(getenv("RANK"));
         printf("Pre UDP fd: %d", udp_fd);
 
@@ -105,23 +102,6 @@ namespace gloo {
           printf("UDP bound to port: %d\n", ntohs(sockInfo.sin_port));
           if (setsockopt(udp_fd, SOL_SOCKET, SO_NO_CHECK, (void *) &disable, sizeof(disable)) < 0) {
             perror("setsockopt failed");
-          }
-
-          if(_env_rank == 0){
-            struct sockaddr_in srvAddrSync, sockInfoSync;
-            sync_udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
-            if (sync_udp_fd == -1)
-              printf("Error SYNC UDP socket");
-            srvAddrSync.sin_family = AF_INET;
-            printf("Trying SYNC UDP port: %d\n", UDP_SYNC_PORT);
-            srvAddrSync.sin_port = htons(UDP_SYNC_PORT);
-            srvAddrSync.sin_addr.s_addr = INADDR_ANY;
-            if (bind(sync_udp_fd, (struct sockaddr *) &srvAddrSync, sizeof(srvAddrSync)) < 0)
-              perror("SYNC UDP bind failed\n");
-            bzero(&sockInfoSync, sizeof(sockInfoSync));
-            len = sizeof(sockInfoSync);
-            getsockname(sync_udp_fd, (struct sockaddr *) &sockInfoSync, &len);
-            printf("SYNC UDP bound to port: %d\n", ntohs(sockInfoSync.sin_port));
           }
         }
       }
@@ -392,54 +372,6 @@ namespace gloo {
         return len;
       }
 
-      void Pair::waitForUDPSync() {
-        int _world_size = atoi(getenv("WORLD_SIZE"));
-
-        for (int i = 0; i < _world_size - 1; i++) {
-          int recved_rank;
-          struct sockaddr_in cliaddr;
-          ssize_t n;
-
-          socklen_t len = sizeof(cliaddr);  //len is value/result
-
-          n = recvfrom(sync_udp_fd, &recved_rank, sizeof(int),
-                       0, (struct sockaddr *) &cliaddr,
-                       &len);
-          if (n < 0) {
-            printf("\n%s\n", strerror(errno));
-          }
-        }
-      }
-
-      void Pair::sendSyncUDP() {
-        struct sockaddr_in addr;
-        memset(&addr, 0, sizeof(addr));
-        const char *master_host = getenv("MASTER_ADDR");
-        addr.sin_addr.s_addr = inet_addr(master_host);
-        addr.sin_port = htons(UDP_SYNC_PORT);
-        addr.sin_family = AF_INET;
-        int _udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
-        if (_udp_fd == -1)
-          printf("Error UDP socket");
-        ssize_t n = sendto(_udp_fd, &_env_rank, sizeof(int), 0, (struct sockaddr *) &addr,
-               sizeof(addr));
-      }
-
-      void Pair::syncUDP() {
-        if(sync_udp == nullptr){
-          printf("No Sync");
-          return;
-        }
-        if (_env_rank == 0){
-          printf("Rank0 Wait");
-          waitForUDPSync();
-        }
-        else {
-          printf("Other Rank Send");
-          sendSyncUDP();
-        }
-      }
-
       ssize_t Pair::prepareCOAPWrite(
           Op &op,
           const NonOwningPtr<UnboundBuffer> &buf,
@@ -535,15 +467,9 @@ namespace gloo {
             memset(coapBuffer, 0, sizeof(coapBuffer));
             const auto nbytes = prepareCOAPWrite(op, buf, coapBuffer, iov.data(), ioc, coapPacketHeader, chunk_id);
             ssize_t myrv;
-
-            if(_env_rank == 0)
-              syncUDP();
             
             if ((myrv = writev(udp_fd, iov.data(), ioc)) < 0)
               printf("UDP write failed\n");
-
-            if(_env_rank != 0)
-              syncUDP();
 
             op.nwritten += myrv;
             readUDP(buf, chunk_id);

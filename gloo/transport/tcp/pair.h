@@ -167,11 +167,10 @@ class Pair : public ::gloo::transport::Pair, public Handler {
   bool busyPoll_;
   int fd_;
   size_t sendBufferSize_;
-  static int udp_fd, sync_udp_fd;
+  static int udp_fd;
   Address self_;
   Address peer_;
   bool is_client_;
-  char *sync_udp;
   int _env_rank;
   std::mutex m_;
   std::condition_variable cv_;
@@ -403,9 +402,6 @@ class Pair : public ::gloo::transport::Pair, public Handler {
           );
 
   void readUDP(NonOwningPtr<UnboundBuffer>& buf, int chunk_id);
-  void syncUDP();
-  void sendSyncUDP();
-  void waitForUDPSync();
 };
 
 } // namespace tcp
