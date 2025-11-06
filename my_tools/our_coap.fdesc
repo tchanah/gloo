@@ -1,38 +1,30 @@
-enum8 T_our_msg_type
+enum8 T_udpmod_msg_type
 {
-    msg 0
+    request 0
 }
 
 
-struct T_our_coap_header
+struct T_udpmod_header
 {
-    byte_order big_endian;
-    uint4 ver_type;
-    uint4 token_len;
-    uint8 code;
-    uint16 msg_id;
-    uint16 options;
-    uint16 options2;
-    uint8 end_of_options;
-    uint16 coll_id;
-    uint8 coll_type;
-    uint8 recursion_level;
-    uint8 rank;
-    uint8 no_of_nodes;
-    uint8 op;
-    uint16 data_type;
-    uint16 no_of_elements;
-    uint8 distr_tot;
-    uint8 distr_rank;    
+    byte_order little_endian;
+    uint16 collective_id;
+    uint8 collective_type;
+    uint8 operation;
+    uint8 reserved0;
+    uint8 reserved1;
+    uint8 max_level;
+    uint8 current_level;
+    uint32 chunk_index;
+    uint32 total_chunks;
 }
 
-struct T_our_msg
+struct T_udpmod_msg
 {
-    T_our_coap_header header;
-    int16[512] data;
+    T_udpmod_header header;
+    float32[256] data;
 }
 
-switch T_custom_switch # T_our_msg_type
+switch T_custom_switch # T_udpmod_msg_type
 {
-    default :  T_our_msg "";
+    default :  T_udpmod_msg "";
 }

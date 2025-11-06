@@ -46,9 +46,42 @@ namespace gloo {
         constexpr size_t kMaxSendBufferSize = 32 * 1024 * 1024;
         constexpr size_t kMaxRecvBufferSize = 32 * 1024 * 1024;
 
+        uint64_t parseEnvU64(const char* name, uint64_t defaultValue) {
+          const char* value = getenv(name);
+          if (value == nullptr || *value == '\0') {
+            return defaultValue;
+          }
+
+          char* end = nullptr;
+          errno = 0;
+          unsigned long long parsed = strtoull(value, &end, 0);
+          if (errno != 0 || end == value) {
+            return defaultValue;
+          }
+          return static_cast<uint64_t>(parsed);
+        }
+
+        bool isEnvFlagEnabled(const char* name) {
+          const char* value = getenv(name);
+          if (value == nullptr) {
+            return false;
+          }
+          if (*value == '\0') {
+            return true;
+          }
+
+          char* end = nullptr;
+          errno = 0;
+          unsigned long long parsed = strtoull(value, &end, 0);
+          if (errno != 0 || end == value) {
+            return true;
+          }
+          return parsed != 0;
+        }
+
       } // namespace
 
-      int Pair::udp_fd = 0;
+      int Pair::udpmod_fd = 0;
 
       Pair::Pair(
           Context* context,
@@ -69,9 +102,9 @@ namespace gloo {
 
         listen();
         _env_rank = atoi(getenv("RANK"));
-        printf("Pre UDP fd: %d", udp_fd);
+        printf("Pre UDP fd: %d", udpmod_fd);
 
-        if (udp_fd == 0) {
+        if (udpmod_fd == 0) {
           struct sockaddr_in addr, srvAddr, sockInfo;
           memset(&addr, 0, sizeof(addr));
           const char *env_fpga_host = getenv("FPGA_HOST");
@@ -80,30 +113,48 @@ namespace gloo {
           
           addr.sin_port = htons(5683);
           addr.sin_family = AF_INET;
-          udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
-          printf("UDP FD: %d\n", udp_fd);
-          if (udp_fd == -1)
+          udpmod_fd = socket(AF_INET, SOCK_DGRAM, 0);
+          printf("UDP FD: %d\n", udpmod_fd);
+          if (udpmod_fd == -1)
             printf("Error UDP socket");
           int disable = 1;
-          if (setsockopt(udp_fd, SOL_SOCKET, SO_NO_CHECK, (void *) &disable, sizeof(disable)) < 0) {
+          if (setsockopt(udpmod_fd, SOL_SOCKET, SO_NO_CHECK, (void *) &disable, sizeof(disable)) < 0) {
             perror("setsockopt failed");
           }
 
           srvAddr.sin_family = AF_INET;
           srvAddr.sin_addr.s_addr = INADDR_ANY;
-          if (bind(udp_fd, (struct sockaddr *) &srvAddr, sizeof(srvAddr)) < 0)
+          if (bind(udpmod_fd, (struct sockaddr *) &srvAddr, sizeof(srvAddr)) < 0)
             perror("UDP bind failed\n");
-          if (::connect(udp_fd, (struct sockaddr *) &addr, sizeof(addr)) < 0) {
+          if (::connect(udpmod_fd, (struct sockaddr *) &addr, sizeof(addr)) < 0) {
             perror("Error UDP connect");
           }
           bzero(&sockInfo, sizeof(sockInfo));
           socklen_t len = sizeof(sockInfo);
-          getsockname(udp_fd, (struct sockaddr *) &sockInfo, &len);
+          getsockname(udpmod_fd, (struct sockaddr *) &sockInfo, &len);
           printf("UDP bound to port: %d\n", ntohs(sockInfo.sin_port));
-          if (setsockopt(udp_fd, SOL_SOCKET, SO_NO_CHECK, (void *) &disable, sizeof(disable)) < 0) {
+          if (setsockopt(udpmod_fd, SOL_SOCKET, SO_NO_CHECK, (void *) &disable, sizeof(disable)) < 0) {
             perror("setsockopt failed");
           }
         }
+
+        const auto defaultMaxLevel = computeDefaultMaxLevel();
+        udpmodConfig_.collective_id = static_cast<uint16_t>(
+            parseEnvU64("UDP_MOD_COLLECTIVE_ID", 0));
+        udpmodConfig_.collective_type = static_cast<uint8_t>(
+            parseEnvU64("UDP_MOD_COLLECTIVE_TYPE", 0x01));
+        udpmodConfig_.operation = static_cast<uint8_t>(
+            parseEnvU64("UDP_MOD_OPERATION", 0x05));
+        udpmodConfig_.max_level = static_cast<uint8_t>(
+            parseEnvU64("UDP_MOD_MAX_LEVEL", defaultMaxLevel));
+        udpmodConfig_.request_level = static_cast<uint8_t>(
+            parseEnvU64("UDP_MOD_REQUEST_LEVEL", 0));
+        udpmodConfig_.response_level = static_cast<uint8_t>(
+            parseEnvU64("UDP_MOD_RESPONSE_LEVEL", udpmodConfig_.max_level));
+        udpmodConfig_.log_packets =
+            isEnvFlagEnabled("UDP_MOD_LOG_PACKETS") ||
+            isEnvFlagEnabled("LOG_SEND_RECV");
+        udpmodConfig_.dry_run = isEnvFlagEnabled("UDP_MOD_DRY_RUN");
       }
 
 // Destructor performs a "soft" close.
@@ -372,63 +423,159 @@ namespace gloo {
         return len;
       }
 
-      ssize_t Pair::prepareCOAPWrite(
-          Op &op,
-          const NonOwningPtr<UnboundBuffer> &buf,
-          char *dstBuf,
-          struct iovec *iov,
-          int &ioc,
-          COAPPacketHeader &coapPacketHeader,
-          int chunk_id
-      ) {
+      ssize_t Pair::prepareUDPmodPacket(
+          std::array<uint8_t, kUdpmodChunkBytes>& payload,
+          struct iovec* iov,
+          int& ioc,
+          UDPmodPacketHeader& header,
+          size_t chunk_index,
+          size_t total_chunks) const {
+        header.collective_id = udpmodConfig_.collective_id;
+        header.collective_type = udpmodConfig_.collective_type;
+        header.operation = udpmodConfig_.operation;
+        header.reserved0 = 0;
+        header.reserved1 = 0;
+        header.max_level = udpmodConfig_.max_level;
+        header.current_level = udpmodConfig_.request_level;
+        header.chunk_index = static_cast<uint32_t>(chunk_index);
+        header.total_chunks = static_cast<uint32_t>(total_chunks);
+
         ssize_t len = 0;
         ioc = 0;
-        int no_of_elements = 256;
-        coapPacketHeader.version_and_token_len = 16; // 00010000
-        coapPacketHeader.code = 0;
-        coapPacketHeader.message_id = 0;
-        coapPacketHeader.options = 0;
-        coapPacketHeader.end_options = 255;
-        coapPacketHeader.collective_id = 0;
-        coapPacketHeader.collective_type = 0;
-        coapPacketHeader.recursion_level = 0;
-        coapPacketHeader.rank = 0;
-        coapPacketHeader.no_of_nodes = 0;
-        coapPacketHeader.operation = 3; //MPI_Op::MPI_SUM;
-        coapPacketHeader.data_type = 0;
-        coapPacketHeader.no_of_elements = no_of_elements;
-        coapPacketHeader.distribution_total = 0;
-        coapPacketHeader.distribution_rank = 0;
-        cOAPPacketToNetworkByteOrder(coapPacketHeader);
-        iov[ioc].iov_base = ((char *) &coapPacketHeader);
-        iov[ioc].iov_len = sizeof(coapPacketHeader);
+
+        iov[ioc].iov_base = &header;
+        iov[ioc].iov_len = sizeof(header);
         len += iov[ioc].iov_len;
         ioc++;
 
-        for (int i = 0; i < no_of_elements; i++) {
-          int16_t int_part = (int16_t) ((int32_t *) buf->ptr)[i + (256 * chunk_id)];
-          ((uint16_t *) dstBuf)[2 * i] = int_part;
-          ((uint16_t *) dstBuf)[2 * i + 1] = 0;
-
-        }
-        iov[ioc].iov_base = (char *) dstBuf;
-        iov[ioc].iov_len = sizeof(int32_t) * no_of_elements;
+        iov[ioc].iov_base = payload.data();
+        iov[ioc].iov_len = payload.size();
         len += iov[ioc].iov_len;
         ioc++;
-
 
         return len;
       }
 
-      void Pair::cOAPPacketToNetworkByteOrder(
-          COAPPacketHeader &coapPacketHeader
-      ) {
-        coapPacketHeader.message_id = htons(coapPacketHeader.message_id);
-        coapPacketHeader.options = htonl(coapPacketHeader.options);
-        coapPacketHeader.collective_id = htons(coapPacketHeader.collective_id);
-        coapPacketHeader.data_type = htons(coapPacketHeader.data_type);
-        coapPacketHeader.no_of_elements = htons(coapPacketHeader.no_of_elements);
+      void Pair::readUDPmod(
+          NonOwningPtr<UnboundBuffer>& buf,
+          size_t chunk_bytes,
+          size_t total_chunks) const {
+        std::array<uint8_t, Pair::kUdpmodPacketBytes> buffer{};
+        struct sockaddr_in cliaddr;
+        memset(&cliaddr, 0, sizeof(cliaddr));
+        socklen_t len = sizeof(cliaddr);
 
+        ssize_t n = recvfrom(
+            udpmod_fd,
+            reinterpret_cast<char*>(buffer.data()),
+            buffer.size(),
+            MSG_WAITALL,
+            reinterpret_cast<struct sockaddr*>(&cliaddr),
+            &len);
+
+        if (n < 0) {
+          perror("UDPmod recv failed");
+          return;
+        }
+
+        if (n < static_cast<ssize_t>(Pair::kUdpmodMetadataBytes)) {
+          printf("UDPmod recv too small: %zd\n", n);
+          return;
+        }
+
+        const auto* header =
+            reinterpret_cast<const UDPmodPacketHeader*>(buffer.data());
+        size_t chunk_index = static_cast<size_t>(header->chunk_index);
+        if (total_chunks > 0) {
+          GLOO_ENFORCE_LT(
+              chunk_index,
+              total_chunks,
+              "UDPmod chunk index out of bounds");
+        } else {
+          chunk_index = 0;
+        }
+
+        GLOO_ENFORCE_EQ(
+            header->current_level,
+            udpmodConfig_.response_level,
+            "UDPmod unexpected response level");
+
+        if (total_chunks > 0) {
+          GLOO_ENFORCE_EQ(
+              static_cast<size_t>(header->total_chunks),
+              total_chunks,
+              "UDPmod total chunk mismatch");
+        }
+
+        size_t payload_bytes = 0;
+        if (n > static_cast<ssize_t>(Pair::kUdpmodMetadataBytes)) {
+          payload_bytes = static_cast<size_t>(
+              n - static_cast<ssize_t>(Pair::kUdpmodMetadataBytes));
+        }
+        payload_bytes = std::min(payload_bytes, chunk_bytes);
+
+        uint8_t* dst = static_cast<uint8_t*>(buf->ptr) + chunk_index * chunk_bytes;
+        memset(dst, 0, chunk_bytes);
+        memcpy(dst, buffer.data() + Pair::kUdpmodMetadataBytes, payload_bytes);
+      }
+
+      void Pair::logUDPmodPacket(
+          const UDPmodPacketHeader& header,
+          const std::array<uint8_t, kUdpmodChunkBytes>& payload,
+          size_t payload_bytes,
+          size_t chunk_index,
+          size_t total_chunks) const {
+        const unsigned long long chunkIdx =
+            static_cast<unsigned long long>(chunk_index + 1);
+        const unsigned long long total =
+            static_cast<unsigned long long>(total_chunks);
+        printf(
+            "[UDPmod] send chunk %llu/%llu | coll_id=0x%04x type=0x%02x op=0x%02x "
+            "max_lvl=%u cur_lvl=%u total_chunks=%u payload_bytes=%zu\n",
+            chunkIdx,
+            total,
+            header.collective_id,
+            header.collective_type,
+            header.operation,
+            header.max_level,
+            header.current_level,
+            header.total_chunks,
+            payload_bytes);
+
+        if (payload_bytes == 0) {
+          printf("[UDPmod] payload empty\n");
+          return;
+        }
+
+        const size_t wordCount = std::min(
+            (payload_bytes + sizeof(uint32_t) - 1) / sizeof(uint32_t),
+            kUdpmodChunkBytes / sizeof(uint32_t));
+        const uint32_t* words =
+            reinterpret_cast<const uint32_t*>(payload.data());
+
+        for (size_t i = 0; i < wordCount; i++) {
+          if ((i % 8) == 0) {
+            printf("  [%03zu]", i);
+          }
+          printf(" %08x", words[i]);
+          if (((i + 1) % 8) == 0 || i + 1 == wordCount) {
+            printf("\n");
+          }
+        }
+      }
+
+      uint8_t Pair::computeDefaultMaxLevel() const {
+        if (context_ == nullptr || context_->size <= 1) {
+          return 0;
+        }
+
+        size_t span = 1;
+        uint8_t level = 0;
+        while (span < context_->size) {
+          span <<= 1;
+          level++;
+        }
+        return level + 1;
       }
 
 // write is called from:
@@ -458,21 +605,66 @@ namespace gloo {
         }
         
         if (op.preamble.slot == 1000) {
-          int chunk_id = 0;
-          int total_chunks = (buf->size / 4) / 256;
-          
-          for (;chunk_id < total_chunks; chunk_id++) {
-            COAPPacketHeader coapPacketHeader;
-            char coapBuffer[1024];
-            memset(coapBuffer, 0, sizeof(coapBuffer));
-            const auto nbytes = prepareCOAPWrite(op, buf, coapBuffer, iov.data(), ioc, coapPacketHeader, chunk_id);
-            ssize_t myrv;
-            
-            if ((myrv = writev(udp_fd, iov.data(), ioc)) < 0)
-              printf("UDP write failed\n");
+          if (!buf) {
+            return false;
+          }
+
+          size_t maxBytes = 0;
+          if (buf->size > op.offset) {
+            maxBytes = buf->size - op.offset;
+          }
+
+          const size_t totalBytes = std::min(op.nbytes, maxBytes);
+          if (totalBytes == 0) {
+            return true;
+          }
+
+          const uint8_t* src =
+              static_cast<const uint8_t*>(buf->ptr) + op.offset;
+
+          const size_t chunkBytes = kUdpmodChunkBytes;
+          const size_t totalChunks = (totalBytes + chunkBytes - 1) / chunkBytes;
+
+          for (size_t chunk = 0; chunk < totalChunks; ++chunk) {
+            std::array<uint8_t, kUdpmodChunkBytes> payload{};
+            const size_t chunkOffset = chunk * chunkBytes;
+            const size_t bytesRemaining =
+                (chunkOffset < totalBytes)
+                    ? std::min(chunkBytes, totalBytes - chunkOffset)
+                    : size_t(0);
+
+            if (bytesRemaining > 0) {
+              memcpy(payload.data(), src + chunkOffset, bytesRemaining);
+            }
+
+            UDPmodPacketHeader header{};
+            const auto packetBytes = prepareUDPmodPacket(
+                payload, iov.data(), ioc, header, chunk, totalChunks);
+
+            if (udpmodConfig_.log_packets) {
+              logUDPmodPacket(
+                  header,
+                  payload,
+                  bytesRemaining,
+                  chunk,
+                  totalChunks);
+            }
+
+            ssize_t myrv = writev(udpmod_fd, iov.data(), ioc);
+            if (myrv < 0) {
+              perror("UDPmod write failed");
+              return false;
+            }
+
+            GLOO_ENFORCE_EQ(
+                static_cast<size_t>(myrv),
+                static_cast<size_t>(packetBytes),
+                "UDPmod partial write");
 
             op.nwritten += myrv;
-            readUDP(buf, chunk_id);
+            if (!udpmodConfig_.dry_run) {
+              readUDPmod(buf, chunkBytes, totalChunks);
+            }
           }
 
           return true;
@@ -539,33 +731,6 @@ namespace gloo {
 
         writeComplete(op, buf, opcode);
         return true;
-      }
-
-      void Pair::readUDP(NonOwningPtr<UnboundBuffer>& buf, int chunk_id) {
-#define MAXLINE 1046
-        char buffer[MAXLINE];
-
-        struct sockaddr_in cliaddr;
-        memset(&cliaddr, 0, sizeof(cliaddr));
-        socklen_t len;
-        size_t n;
-
-        len = sizeof(cliaddr);  //len is value/result
-
-        n = recvfrom(udp_fd, (char *) buffer, MAXLINE,
-                     MSG_WAITALL, (struct sockaddr *) &cliaddr,
-                     &len);
-        
-        if (n < 0) {
-          printf("\n%s\n", strerror(errno));
-        }
-        
-        int16_t *base = (int16_t *)(buffer + sizeof(COAPPacketHeader));
-        int j = 0;
-        for (int i = 0; i < 512; i+=2) {
-          ((int *)buf->ptr)[(256 * chunk_id) + j] = base[i];
-          j++;
-        }
       }
 
       void Pair::writeComplete(const Op &op, NonOwningPtr<UnboundBuffer> &buf,

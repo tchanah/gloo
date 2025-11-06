@@ -166,11 +166,15 @@ void ring(
       "missing connection between rank " + std::to_string(context->rank) +
           " (this process) and rank " + std::to_string(sendRank));
 
-  // UDP send
-//    printf("Initiating UDP send\n");
-  out[0]->send(sendRank, 1000   , 0, std::numeric_limits<size_t>::max());
-//    printf("Done UDP send\n");
-    return;
+  // Dispatch the buffer over the UDPmod fast path. The transport layer is
+  // responsible for chunking, transmitting, and waiting for the final
+  // aggregated response from the hardware.
+  out[0]->send(sendRank, 1000, 0, totalBytes);
+
+  // Propagate the hardware result to any additional output buffers so the API
+  // mirrors the behaviour of the stock allreduce implementation.
+  broadcastOutputs(0, totalBytes);
+  return;
 
 
     // The ring algorithm works as follows.

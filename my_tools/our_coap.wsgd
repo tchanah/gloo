@@ -1,7 +1,7 @@
 # protocol metadata
-PROTONAME Our COAP
-PROTOSHORTNAME OurCoAP
-PROTOABBREV ourcoap
+PROTONAME UDPmod
+PROTOSHORTNAME UDPmod
+PROTOABBREV udpmod
 
 # conditions on which the dissector is applied:
 # the protocol will be applied on all UDP messages with port = 8756
@@ -9,10 +9,10 @@ PARENT_SUBFIELD udp.port
 PARENT_SUBFIELD_VALUES 5683
 
 # the name of the header structure
-MSG_HEADER_TYPE                    T_our_coap_header
+MSG_HEADER_TYPE                    T_udpmod_header
 # field which permits to identify the message type.
-MSG_ID_FIELD_NAME                  msg_id
-MSG_MAIN_TYPE                      T_custom_switch(msg_id)
+MSG_ID_FIELD_NAME                  current_level
+MSG_MAIN_TYPE                      T_custom_switch(current_level)
 
 # this token marks the end of the protocol description
 PROTO_TYPE_DEFINITIONS

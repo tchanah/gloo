@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -145,6 +146,26 @@ class Pair : public ::gloo::transport::Pair, public Handler {
 
   void close() override;
 
+  struct UDPmodPacketHeader {
+    uint16_t collective_id;
+    uint8_t collective_type;
+    uint8_t operation;
+    uint8_t reserved0;
+    uint8_t reserved1;
+    uint8_t max_level;
+    uint8_t current_level;
+    uint32_t chunk_index;
+    uint32_t total_chunks;
+  } __attribute__((packed));
+
+  static constexpr size_t kUdpmodElementsPerChunk = 256;
+  static constexpr size_t kUdpmodElementSizeBytes = sizeof(float);
+  static constexpr size_t kUdpmodChunkBytes =
+      kUdpmodElementsPerChunk * kUdpmodElementSizeBytes;
+  static constexpr size_t kUdpmodMetadataBytes = sizeof(UDPmodPacketHeader);
+  static constexpr size_t kUdpmodPacketBytes =
+      kUdpmodMetadataBytes + kUdpmodChunkBytes;
+
  protected:
   // Refer to parent context using raw pointer. This could be a
   // weak_ptr, seeing as the context class is a shared_ptr, but:
@@ -167,7 +188,7 @@ class Pair : public ::gloo::transport::Pair, public Handler {
   bool busyPoll_;
   int fd_;
   size_t sendBufferSize_;
-  static int udp_fd;
+  static int udpmod_fd;
   Address self_;
   Address peer_;
   bool is_client_;
@@ -353,55 +374,40 @@ class Pair : public ::gloo::transport::Pair, public Handler {
   // this instance is called again when it is in an error state.
   std::exception_ptr ex_;
 
-  struct COAPPacketHeader {
-      uint8_t version_and_token_len;
-      uint8_t code;
-      uint16_t message_id;
-      uint32_t options;
-      uint8_t end_options;
-      uint16_t collective_id;
-      uint8_t collective_type;
-      uint8_t recursion_level;
-      uint8_t rank;
-      uint8_t no_of_nodes;
-      uint8_t operation;
-      uint16_t data_type;
-      uint16_t no_of_elements;
-      uint8_t distribution_total;
-      uint8_t distribution_rank;
+  struct UDPmodConfig {
+    uint16_t collective_id;
+    uint8_t collective_type;
+    uint8_t operation;
+    uint8_t max_level;
+    uint8_t request_level;
+    uint8_t response_level;
+    bool log_packets;
+    bool dry_run;
+  };
 
-  }__attribute__((packed));
+  ssize_t prepareUDPmodPacket(
+      std::array<uint8_t, kUdpmodChunkBytes>& payload,
+      struct iovec* iov,
+      int& ioc,
+      UDPmodPacketHeader& header,
+      size_t chunk_index,
+      size_t total_chunks) const;
 
-  typedef enum _MPI_Op {
-    MPI_OP_NULL  = 0x18000000,
-    MPI_MAX      = 0x58000001,
-    MPI_MIN      = 0x58000003,
-    MPI_SUM      = 0x58000003,
-    MPI_PROD     = 0x58000004,
-    MPI_LAND     = 0x58000005,
-    MPI_BAND     = 0x58000006,
-    MPI_LOR      = 0x58000007,
-    MPI_BOR      = 0x58000008,
-    MPI_LXOR     = 0x58000009,
-    MPI_BXOR     = 0x5800000a,
-    MPI_MINLOC   = 0x5800000b,
-    MPI_MAXLOC   = 0x5800000c,
-    MPI_REPLACE  = 0x5800000d
-  } MPI_Op;
-  ssize_t prepareCOAPWrite(
-    Op& op,
-    const NonOwningPtr<UnboundBuffer>& buf,
-    char *dstBuf,
-    struct iovec* iov,
-    int& ioc,
-    COAPPacketHeader &coapPacketHeader,
-    int chunk_id);
+  void readUDPmod(
+      NonOwningPtr<UnboundBuffer>& buf,
+      size_t chunk_bytes,
+      size_t total_chunks) const;
 
-  void cOAPPacketToNetworkByteOrder(
-          COAPPacketHeader &coapPacketHeader
-          );
+  void logUDPmodPacket(
+      const UDPmodPacketHeader& header,
+      const std::array<uint8_t, kUdpmodChunkBytes>& payload,
+      size_t payload_bytes,
+      size_t chunk_index,
+      size_t total_chunks) const;
 
-  void readUDP(NonOwningPtr<UnboundBuffer>& buf, int chunk_id);
+  UDPmodConfig udpmodConfig_;
+
+  uint8_t computeDefaultMaxLevel() const;
 };
 
 } // namespace tcp

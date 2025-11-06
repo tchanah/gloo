@@ -8,20 +8,22 @@
 #include <netinet/in.h>
    
 #define PORT     5683
-#define MAXLINE 10240
+#define UDP_MOD_ELEMENTS_PER_CHUNK 256
+#define UDP_MOD_METADATA_BYTES 16
+#define UDP_MOD_CHUNK_BYTES (UDP_MOD_ELEMENTS_PER_CHUNK * sizeof(float))
+#define MAXLINE (UDP_MOD_METADATA_BYTES + UDP_MOD_CHUNK_BYTES)
 
-struct COAPPacketHeader {
-    uint8_t version, token_len, code;
-    uint16_t message_id;
-    uint32_t options;
-    uint8_t end_options;
+struct UDPmodPacketHeader {
     uint16_t collective_id;
-    uint8_t collective_type, recursion_level, rank, no_of_nodes, operation;
-    uint16_t data_type;
-    uint16_t no_of_elements;
-    uint8_t distribution_total, distribution_rank;
-
-};
+    uint8_t collective_type;
+    uint8_t operation;
+    uint8_t reserved0;
+    uint8_t reserved1;
+    uint8_t max_level;
+    uint8_t current_level;
+    uint32_t chunk_index;
+    uint32_t total_chunks;
+} __attribute__((packed));
 // Driver code
 int main() {
     int sockfd;
@@ -61,37 +63,34 @@ int main() {
                 &len)) > 0) {
         //buffer[n] = '\0';
         printf("Read : %d\n", n);
-        if (n >= 48) {
-            printf("Notif?\n");
+        printf("Received %d bytes\n", n);
+        if (n < UDP_MOD_METADATA_BYTES) {
+            printf("Packet too small for metadata.\n");
+            continue;
         }
-        for (int i = 0; i < n / sizeof(int); i++) {
-            printf("%d, ", ((int *) buffer)[i]);
+
+        printf("Parsing...\n");
+        const UDPmodPacketHeader *packetHeader = (UDPmodPacketHeader *) buffer;
+        printf("Header:\nCollective ID: 0x%04x\nCollective type: 0x%02x\nOperation: 0x%02x\n"
+               "Max level: %u\nCurrent level: %u\nChunk index: %u\nTotal chunks: %u\n",
+               packetHeader->collective_id,
+               packetHeader->collective_type,
+               packetHeader->operation,
+               packetHeader->max_level,
+               packetHeader->current_level,
+               packetHeader->chunk_index,
+               packetHeader->total_chunks);
+
+        printf("Data (float): \n");
+        const float *data = (const float *)(buffer + sizeof(UDPmodPacketHeader));
+        int elements = std::min(UDP_MOD_ELEMENTS_PER_CHUNK, (n - (int)sizeof(UDPmodPacketHeader)) / (int)sizeof(float));
+        for (int i = 0; i < elements; i++) {
+            printf("%.6f ", data[i]);
+            if ((i + 1) % 8 == 0) {
+                printf("\n");
+            }
         }
         printf("\n");
-        printf("Parsing...\n");
-        const COAPPacketHeader *coapPacketHeader = (COAPPacketHeader *) buffer;
-        printf("Header: \nVer: %d\nToken len: %d\nCode: %d\nMessageID:%d\nOptions:%d\nEnd of options:%d\n"
-               "Collective ID: %d\nCollective type: %d\nLevel of recursion:%d\nRank: %d\n"
-               "No of nodes: %d\n Operation: %d\nData type: %d\nNo of elements: %d\nDistribution total:%d\n"
-               "Distribution rank: %d\n",
-               coapPacketHeader->version, coapPacketHeader->token_len, coapPacketHeader->code,
-               coapPacketHeader->message_id,
-               coapPacketHeader->options, coapPacketHeader->end_options, coapPacketHeader->collective_id,
-               coapPacketHeader->collective_type,
-               coapPacketHeader->recursion_level, coapPacketHeader->rank, coapPacketHeader->no_of_nodes,
-               coapPacketHeader->operation,
-               coapPacketHeader->data_type, coapPacketHeader->no_of_elements, coapPacketHeader->distribution_total,
-               coapPacketHeader->distribution_rank);
-
-        printf("Data: \n");
-        for (int i = 0; i < (coapPacketHeader->no_of_elements) * 2; i++) {
-            printf("%d, ", ((uint16_t *) (buffer + sizeof(COAPPacketHeader)))[i]);
-
-            //sendto(sockfd, (const char *)hello, strlen(hello),
-            //  MSG_CONFIRM, (const struct sockaddr *) &cliaddr,
-            //    len);
-            //    std::cout<<"Hello message sent."<<std::endl;
-        }
     }
        
     return 0;
