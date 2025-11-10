@@ -82,6 +82,9 @@ namespace gloo {
       } // namespace
 
       int Pair::udpmod_fd = 0;
+      struct sockaddr_in Pair::udpmod_dest_addr;
+      bool Pair::udpmod_socket_connected = false;
+      std::mutex Pair::udpmod_init_mutex;
 
       Pair::Pair(
           Context* context,
@@ -104,37 +107,64 @@ namespace gloo {
         _env_rank = atoi(getenv("RANK"));
         printf("Pre UDP fd: %d", udpmod_fd);
 
-        if (udpmod_fd == 0) {
-          struct sockaddr_in addr, srvAddr, sockInfo;
-          memset(&addr, 0, sizeof(addr));
-          const char *env_fpga_host = getenv("FPGA_HOST");
-          printf("FPGA_HOST: %s\n", env_fpga_host);
-          addr.sin_addr.s_addr = inet_addr(env_fpga_host);
-          
-          addr.sin_port = htons(5683);
-          addr.sin_family = AF_INET;
-          udpmod_fd = socket(AF_INET, SOCK_DGRAM, 0);
-          printf("UDP FD: %d\n", udpmod_fd);
-          if (udpmod_fd == -1)
-            printf("Error UDP socket");
-          int disable = 1;
-          if (setsockopt(udpmod_fd, SOL_SOCKET, SO_NO_CHECK, (void *) &disable, sizeof(disable)) < 0) {
-            perror("setsockopt failed");
-          }
+        // Protect socket initialization with mutex to avoid race conditions
+        {
+          std::lock_guard<std::mutex> lock(udpmod_init_mutex);
+          if (udpmod_fd == 0) {
+            struct sockaddr_in addr, srvAddr, sockInfo;
+            memset(&addr, 0, sizeof(addr));
+            const char *env_fpga_host = getenv("FPGA_HOST");
+            printf("FPGA_HOST: %s\n", env_fpga_host);
+            addr.sin_addr.s_addr = inet_addr(env_fpga_host);
+            
+            // Default to 5684 to avoid COAP auto-detection in Wireshark
+            // Can be overridden with UDP_MOD_PORT environment variable
+            const char *env_udp_port = getenv("UDP_MOD_PORT");
+            uint16_t udp_port = 5684;
+            if (env_udp_port != nullptr) {
+              udp_port = static_cast<uint16_t>(atoi(env_udp_port));
+            }
+            addr.sin_port = htons(udp_port);
+            addr.sin_family = AF_INET;
+            udpmod_fd = socket(AF_INET, SOCK_DGRAM, 0);
+            printf("UDP FD: %d\n", udpmod_fd);
+            if (udpmod_fd == -1) {
+              printf("Error UDP socket");
+              perror("socket");
+            } else {
+              int disable = 1;
+              if (setsockopt(udpmod_fd, SOL_SOCKET, SO_NO_CHECK, (void *) &disable, sizeof(disable)) < 0) {
+                perror("setsockopt failed");
+              }
 
-          srvAddr.sin_family = AF_INET;
-          srvAddr.sin_addr.s_addr = INADDR_ANY;
-          if (bind(udpmod_fd, (struct sockaddr *) &srvAddr, sizeof(srvAddr)) < 0)
-            perror("UDP bind failed\n");
-          if (::connect(udpmod_fd, (struct sockaddr *) &addr, sizeof(addr)) < 0) {
-            perror("Error UDP connect");
-          }
-          bzero(&sockInfo, sizeof(sockInfo));
-          socklen_t len = sizeof(sockInfo);
-          getsockname(udpmod_fd, (struct sockaddr *) &sockInfo, &len);
-          printf("UDP bound to port: %d\n", ntohs(sockInfo.sin_port));
-          if (setsockopt(udpmod_fd, SOL_SOCKET, SO_NO_CHECK, (void *) &disable, sizeof(disable)) < 0) {
-            perror("setsockopt failed");
+              srvAddr.sin_family = AF_INET;
+              srvAddr.sin_addr.s_addr = INADDR_ANY;
+              srvAddr.sin_port = 0;  // Let OS choose port
+              if (bind(udpmod_fd, (struct sockaddr *) &srvAddr, sizeof(srvAddr)) < 0) {
+                perror("UDP bind failed");
+              } else {
+                // Store destination address for use with sendmsg()
+                udpmod_dest_addr = addr;
+                // Conditionally connect: only if not in dry-run mode
+                // In dry-run mode, we use sendmsg() without connecting to avoid ECONNREFUSED
+                // In real mode, we can connect for better performance with writev()
+                bool is_dry_run = isEnvFlagEnabled("UDP_MOD_DRY_RUN");
+                if (!is_dry_run) {
+                  if (::connect(udpmod_fd, (struct sockaddr *) &addr, sizeof(addr)) < 0) {
+                    perror("Error UDP connect");
+                  } else {
+                    udpmod_socket_connected = true;
+                  }
+                }
+                bzero(&sockInfo, sizeof(sockInfo));
+                socklen_t len = sizeof(sockInfo);
+                getsockname(udpmod_fd, (struct sockaddr *) &sockInfo, &len);
+                printf("UDP bound to port: %d\n", ntohs(sockInfo.sin_port));
+                if (setsockopt(udpmod_fd, SOL_SOCKET, SO_NO_CHECK, (void *) &disable, sizeof(disable)) < 0) {
+                  perror("setsockopt failed");
+                }
+              }
+            }
           }
         }
 
@@ -625,7 +655,15 @@ namespace gloo {
           const size_t chunkBytes = kUdpmodChunkBytes;
           const size_t totalChunks = (totalBytes + chunkBytes - 1) / chunkBytes;
 
+          if (udpmodConfig_.log_packets) {
+            printf("UDPmod: totalBytes=%zu, chunkBytes=%zu, totalChunks=%zu, dry_run=%d\n",
+                   totalBytes, chunkBytes, totalChunks, udpmodConfig_.dry_run ? 1 : 0);
+          }
+
           for (size_t chunk = 0; chunk < totalChunks; ++chunk) {
+            if (udpmodConfig_.log_packets) {
+              printf("UDPmod: loop iteration chunk=%zu/%zu\n", chunk, totalChunks);
+            }
             std::array<uint8_t, kUdpmodChunkBytes> payload{};
             const size_t chunkOffset = chunk * chunkBytes;
             const size_t bytesRemaining =
@@ -650,20 +688,63 @@ namespace gloo {
                   totalChunks);
             }
 
-            ssize_t myrv = writev(udpmod_fd, iov.data(), ioc);
-            if (myrv < 0) {
-              perror("UDPmod write failed");
-              return false;
+            ssize_t myrv;
+            if (udpmod_socket_connected) {
+              // Socket is connected (real mode) - use writev() for better performance
+              myrv = writev(udpmod_fd, iov.data(), ioc);
+              if (myrv < 0) {
+                perror("UDPmod writev failed");
+                if (udpmodConfig_.log_packets) {
+                  printf("UDPmod: writev failed for chunk %zu/%zu, errno=%d\n",
+                         chunk, totalChunks, errno);
+                }
+                return false;
+              }
+            } else {
+              // Socket is not connected (dry-run mode) - use sendmsg() to specify destination
+              struct msghdr msg;
+              memset(&msg, 0, sizeof(msg));
+              msg.msg_name = &udpmod_dest_addr;
+              msg.msg_namelen = sizeof(udpmod_dest_addr);
+              msg.msg_iov = iov.data();
+              msg.msg_iovlen = ioc;
+              
+              myrv = sendmsg(udpmod_fd, &msg, 0);
+              if (myrv < 0) {
+                perror("UDPmod sendmsg failed");
+                if (udpmodConfig_.log_packets) {
+                  printf("UDPmod: sendmsg failed for chunk %zu/%zu, errno=%d\n",
+                         chunk, totalChunks, errno);
+                }
+                return false;
+              }
             }
 
-            GLOO_ENFORCE_EQ(
-                static_cast<size_t>(myrv),
-                static_cast<size_t>(packetBytes),
-                "UDPmod partial write");
+            if (static_cast<size_t>(myrv) != static_cast<size_t>(packetBytes)) {
+              if (udpmodConfig_.log_packets) {
+                printf("UDPmod: partial write for chunk %zu/%zu: wrote %zd bytes, expected %zu bytes\n",
+                       chunk, totalChunks, myrv, packetBytes);
+              }
+              GLOO_ENFORCE_EQ(
+                  static_cast<size_t>(myrv),
+                  static_cast<size_t>(packetBytes),
+                  "UDPmod partial write");
+            }
 
             op.nwritten += myrv;
+            if (udpmodConfig_.log_packets) {
+              printf("UDPmod: sent chunk %zu/%zu, dry_run=%d\n",
+                     chunk, totalChunks, udpmodConfig_.dry_run ? 1 : 0);
+            }
             if (!udpmodConfig_.dry_run) {
+              if (udpmodConfig_.log_packets) {
+                printf("UDPmod: waiting for response for chunk %zu\n", chunk);
+              }
               readUDPmod(buf, chunkBytes, totalChunks);
+            } else {
+              if (udpmodConfig_.log_packets) {
+                printf("UDPmod: skipping readUDPmod (dry_run mode)\n");
+              }
             }
           }
 

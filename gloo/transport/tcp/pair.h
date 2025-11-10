@@ -25,6 +25,8 @@
 
 #include <sys/socket.h>
 #include <sys/uio.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #include "gloo/common/error.h"
 #include "gloo/common/memory.h"
@@ -189,6 +191,9 @@ class Pair : public ::gloo::transport::Pair, public Handler {
   int fd_;
   size_t sendBufferSize_;
   static int udpmod_fd;
+  static struct sockaddr_in udpmod_dest_addr;
+  static bool udpmod_socket_connected;
+  static std::mutex udpmod_init_mutex;
   Address self_;
   Address peer_;
   bool is_client_;
