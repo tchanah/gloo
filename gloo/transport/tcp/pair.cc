@@ -105,7 +105,7 @@ namespace gloo {
 
         listen();
         _env_rank = atoi(getenv("RANK"));
-        printf("Pre UDP fd: %d", udpmod_fd);
+
 
         // Protect socket initialization with mutex to avoid race conditions
         {
@@ -114,7 +114,6 @@ namespace gloo {
             struct sockaddr_in addr, srvAddr, sockInfo;
             memset(&addr, 0, sizeof(addr));
             const char *env_fpga_host = getenv("FPGA_HOST");
-            printf("FPGA_HOST: %s\n", env_fpga_host);
             addr.sin_addr.s_addr = inet_addr(env_fpga_host);
             
             // Default to 5684 to avoid COAP auto-detection in Wireshark
@@ -127,19 +126,34 @@ namespace gloo {
             addr.sin_port = htons(udp_port);
             addr.sin_family = AF_INET;
             udpmod_fd = socket(AF_INET, SOCK_DGRAM, 0);
-            printf("UDP FD: %d\n", udpmod_fd);
             if (udpmod_fd == -1) {
               printf("Error UDP socket");
               perror("socket");
             } else {
               int disable = 1;
               if (setsockopt(udpmod_fd, SOL_SOCKET, SO_NO_CHECK, (void *) &disable, sizeof(disable)) < 0) {
-                perror("setsockopt failed");
+                perror("setsockopt SO_NO_CHECK failed");
+              }
+              int reuse = 1;
+              if (setsockopt(udpmod_fd, SOL_SOCKET, SO_REUSEADDR, (void *) &reuse, sizeof(reuse)) < 0) {
+                perror("setsockopt SO_REUSEADDR failed");
+              }
+              // Increase socket buffers to 8MB for large payload tests (e.g. 512 chunks)
+              int bufSize = 8 * 1024 * 1024; 
+              if (setsockopt(udpmod_fd, SOL_SOCKET, SO_RCVBUF, &bufSize, sizeof(bufSize)) < 0) {
+                perror("setsockopt SO_RCVBUF failed");
+              }
+              if (setsockopt(udpmod_fd, SOL_SOCKET, SO_SNDBUF, &bufSize, sizeof(bufSize)) < 0) {
+                perror("setsockopt SO_SNDBUF failed");
               }
 
+              // Bind to a fixed port based on rank to facilitate Switch routing
+              // Switch will map Port 10000+X -> Rank X
               srvAddr.sin_family = AF_INET;
               srvAddr.sin_addr.s_addr = INADDR_ANY;
-              srvAddr.sin_port = 0;  // Let OS choose port
+              // Base Port 10000. Ensure this is free.
+              // Use _env_rank (world rank from environment) instead of 'rank' (peer rank)
+              srvAddr.sin_port = htons(10000 + _env_rank);
               if (bind(udpmod_fd, (struct sockaddr *) &srvAddr, sizeof(srvAddr)) < 0) {
                 perror("UDP bind failed");
               } else {
@@ -159,7 +173,6 @@ namespace gloo {
                 bzero(&sockInfo, sizeof(sockInfo));
                 socklen_t len = sizeof(sockInfo);
                 getsockname(udpmod_fd, (struct sockaddr *) &sockInfo, &len);
-                printf("UDP bound to port: %d\n", ntohs(sockInfo.sin_port));
                 if (setsockopt(udpmod_fd, SOL_SOCKET, SO_NO_CHECK, (void *) &disable, sizeof(disable)) < 0) {
                   perror("setsockopt failed");
                 }
@@ -181,10 +194,8 @@ namespace gloo {
             parseEnvU64("UDP_MOD_REQUEST_LEVEL", 0));
         udpmodConfig_.response_level = static_cast<uint8_t>(
             parseEnvU64("UDP_MOD_RESPONSE_LEVEL", udpmodConfig_.max_level));
-        udpmodConfig_.log_packets =
-            isEnvFlagEnabled("UDP_MOD_LOG_PACKETS") ||
-            isEnvFlagEnabled("LOG_SEND_RECV");
-        udpmodConfig_.dry_run = isEnvFlagEnabled("UDP_MOD_DRY_RUN");
+        udpmodConfig_.log_packets   = isEnvFlagEnabled("UDP_MOD_LOG_PACKETS");
+        udpmodConfig_.dry_run       = isEnvFlagEnabled("UDP_MOD_DRY_RUN");
       }
 
 // Destructor performs a "soft" close.
@@ -495,11 +506,12 @@ namespace gloo {
         memset(&cliaddr, 0, sizeof(cliaddr));
         socklen_t len = sizeof(cliaddr);
 
+
         ssize_t n = recvfrom(
             udpmod_fd,
             reinterpret_cast<char*>(buffer.data()),
             buffer.size(),
-            MSG_WAITALL,
+            0,  // No flags - UDP packets are discrete datagrams
             reinterpret_cast<struct sockaddr*>(&cliaddr),
             &len);
 
@@ -555,6 +567,9 @@ namespace gloo {
           size_t payload_bytes,
           size_t chunk_index,
           size_t total_chunks) const {
+        if (!udpmodConfig_.log_packets) {
+          return;
+        }
         const unsigned long long chunkIdx =
             static_cast<unsigned long long>(chunk_index + 1);
         const unsigned long long total =
