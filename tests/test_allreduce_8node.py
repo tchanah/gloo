@@ -10,7 +10,7 @@ import socket
 MASTER_ADDR = "127.0.0.1"
 MASTER_PORT = "29500"
 WORLD_SIZE = 8
-ITERATIONS = 1024
+ITERATIONS = 5
 
 def run_node(rank, size):
     # Environment Setup

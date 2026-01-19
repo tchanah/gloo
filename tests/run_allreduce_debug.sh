@@ -8,7 +8,14 @@ export NUM_CHUNKS=1024
 # Debug Logging (Capture Headers)
 export UDP_MOD_LOG_PACKETS=0
 
-export UDP_MOD_COLLECTIVE_ID=0x1  # Non-zero to trigger fresh accelerator reset
+export UDP_MOD_COLLECTIVE_ID=0x3333 # Non-zero to trigger fresh accelerator reset
+
+# Flow control: max in-flight packets (default 8, tune for performance)
+# Lower = more reliable, Higher = faster (if hardware can keep up)
+export UDP_MOD_MAX_IN_FLIGHT=16
+
+# Paced sending (recommended for optimum performance)
+export UDP_MOD_SEND_DELAY_US=50
 
 # 2. Cleanup Previous Runs
 echo "Cleaning up previous processes..."
@@ -22,5 +29,6 @@ sleep 1
 LOG_FILE="${1:-logs/log_single_iteration}"
 
 echo "Running test... Output redirected to $LOG_FILE"
-python3 test_allreduce_8node.py > "$LOG_FILE" 2>&1
+# python3 test_allreduce_8node.py > "$LOG_FILE" 2>&1
+python3 test_allreduce_8node_spawn.py > "$LOG_FILE" 2>&1
 echo "Test finished. Check $LOG_FILE for details."

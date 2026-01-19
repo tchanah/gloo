@@ -23,6 +23,7 @@
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/select.h>
 #include <unistd.h>
 #include <arpa/inet.h>
 
@@ -192,8 +193,19 @@ namespace gloo {
             parseEnvU64("UDP_MOD_MAX_LEVEL", defaultMaxLevel));
         udpmodConfig_.request_level = static_cast<uint8_t>(
             parseEnvU64("UDP_MOD_REQUEST_LEVEL", 0));
+        // Note: Hardware returns response with current_level = max_level + 1
+        // (max_level is the highest level in the tree, response comes from "beyond" that)
         udpmodConfig_.response_level = static_cast<uint8_t>(
-            parseEnvU64("UDP_MOD_RESPONSE_LEVEL", udpmodConfig_.max_level));
+            parseEnvU64("UDP_MOD_RESPONSE_LEVEL", udpmodConfig_.max_level + 1));
+        // Flow control: max in-flight packets (default 1024 = effectively unlimited)
+        // When using paced sending (send_delay_us > 0), this acts as a safety limit
+        udpmodConfig_.max_in_flight = static_cast<size_t>(
+            parseEnvU64("UDP_MOD_MAX_IN_FLIGHT", 1024));
+        // Pacing: delay between sends in microseconds (default 0 = no delay)
+        // Recommended: 20-100μs to match hardware consumption rate
+        // This replaces MAX_IN_FLIGHT windowing with smooth rate-limiting
+        udpmodConfig_.send_delay_us = static_cast<size_t>(
+            parseEnvU64("UDP_MOD_SEND_DELAY_US", 0));
         udpmodConfig_.log_packets   = isEnvFlagEnabled("UDP_MOD_LOG_PACKETS");
         udpmodConfig_.dry_run       = isEnvFlagEnabled("UDP_MOD_DRY_RUN");
       }
@@ -675,92 +687,273 @@ namespace gloo {
                    totalBytes, chunkBytes, totalChunks, udpmodConfig_.dry_run ? 1 : 0);
           }
 
-          for (size_t chunk = 0; chunk < totalChunks; ++chunk) {
-            if (udpmodConfig_.log_packets) {
-              printf("UDPmod: loop iteration chunk=%zu/%zu\n", chunk, totalChunks);
+          // =========================================================
+          // PIPELINED NON-BLOCKING SEND/RECEIVE
+          // Sends all chunks as fast as possible while simultaneously
+          // receiving responses. Uses chunk_index to place data correctly.
+          // In dry_run mode: only send, don't wait for responses.
+          // =========================================================
+          
+          int socket_flags = 0;
+          
+          // Only set non-blocking mode if we need to receive responses
+          if (!udpmodConfig_.dry_run) {
+            socket_flags = fcntl(udpmod_fd, F_GETFL, 0);
+            if (socket_flags < 0) {
+              perror("UDPmod fcntl F_GETFL failed");
+              return false;
             }
-            std::array<uint8_t, kUdpmodChunkBytes> payload{};
-            const size_t chunkOffset = chunk * chunkBytes;
-            const size_t bytesRemaining =
-                (chunkOffset < totalBytes)
-                    ? std::min(chunkBytes, totalBytes - chunkOffset)
-                    : size_t(0);
-
-            if (bytesRemaining > 0) {
-              memcpy(payload.data(), src + chunkOffset, bytesRemaining);
+            if (fcntl(udpmod_fd, F_SETFL, socket_flags | O_NONBLOCK) < 0) {
+              perror("UDPmod fcntl O_NONBLOCK failed");
+              return false;
             }
+          }
 
-            UDPmodPacketHeader header{};
-            const auto packetBytes = prepareUDPmodPacket(
-                payload, iov.data(), ioc, header, chunk, totalChunks);
+          size_t chunks_sent = 0;
+          size_t chunks_received = 0;
+          
+          // Flow control: limit in-flight packets to prevent overwhelming hardware
+          // Hardware accelerator processes chunks from all 8 nodes together, so
+          // we need to give it time to process before sending more.
+          // Configurable via UDP_MOD_MAX_IN_FLIGHT (default 8)
+          const size_t max_in_flight = udpmodConfig_.max_in_flight;
+          
+          // Chunk tracking bitmap to prevent counting duplicate responses
+          // Using a vector<bool> for dynamic sizing based on totalChunks
+          std::vector<bool> chunk_received_bitmap(totalChunks, false);
+          
+          // Receive buffer for responses
+          std::array<uint8_t, Pair::kUdpmodPacketBytes> recv_buffer{};
+          struct sockaddr_in recv_addr;
+          socklen_t recv_addr_len = sizeof(recv_addr);
+          
+          if (udpmodConfig_.log_packets) {
+            printf("UDPmod PIPELINED: Starting send/recv loop for %zu chunks (dry_run=%d, max_in_flight=%zu, send_delay_us=%zu)\n", 
+                   totalChunks, udpmodConfig_.dry_run ? 1 : 0, max_in_flight, udpmodConfig_.send_delay_us);
+          }
 
-            if (udpmodConfig_.log_packets) {
-              logUDPmodPacket(
-                  header,
-                  payload,
-                  bytesRemaining,
-                  chunk,
-                  totalChunks);
-            }
+          // In dry_run mode, we only send - don't wait for responses
+          const size_t target_received = udpmodConfig_.dry_run ? 0 : totalChunks;
 
-            ssize_t myrv;
-            if (udpmod_socket_connected) {
-              // Socket is connected (real mode) - use writev() for better performance
-              myrv = writev(udpmod_fd, iov.data(), ioc);
-              if (myrv < 0) {
-                perror("UDPmod writev failed");
-                if (udpmodConfig_.log_packets) {
-                  printf("UDPmod: writev failed for chunk %zu/%zu, errno=%d\n",
-                         chunk, totalChunks, errno);
-                }
-                return false;
+
+          while (chunks_received < target_received || chunks_sent < totalChunks) {
+            // Note: No timeout here - if responses don't arrive, we'll stall
+            // This makes failures visible rather than masking them
+            
+            // === 1. SEND: Send chunks with flow control ===
+            // Only send if we have room in our in-flight window
+            size_t in_flight = chunks_sent - chunks_received;
+            while (chunks_sent < totalChunks && in_flight < max_in_flight) {
+              std::array<uint8_t, kUdpmodChunkBytes> payload{};
+              const size_t chunkOffset = chunks_sent * chunkBytes;
+              const size_t bytesRemaining =
+                  (chunkOffset < totalBytes)
+                      ? std::min(chunkBytes, totalBytes - chunkOffset)
+                      : size_t(0);
+
+              if (bytesRemaining > 0) {
+                memcpy(payload.data(), src + chunkOffset, bytesRemaining);
               }
-            } else {
-              // Socket is not connected (dry-run mode) - use sendmsg() to specify destination
+
+              UDPmodPacketHeader header{};
+              std::array<struct iovec, 2> send_iov;
+              int send_ioc;
+              prepareUDPmodPacket(payload, send_iov.data(), send_ioc, header, chunks_sent, totalChunks);
+
+              ssize_t send_rv;
               struct msghdr msg;
               memset(&msg, 0, sizeof(msg));
-              msg.msg_name = &udpmod_dest_addr;
-              msg.msg_namelen = sizeof(udpmod_dest_addr);
-              msg.msg_iov = iov.data();
-              msg.msg_iovlen = ioc;
+              msg.msg_iov = send_iov.data();
+              msg.msg_iovlen = send_ioc;
               
-              myrv = sendmsg(udpmod_fd, &msg, 0);
-              if (myrv < 0) {
-                perror("UDPmod sendmsg failed");
-                if (udpmodConfig_.log_packets) {
-                  printf("UDPmod: sendmsg failed for chunk %zu/%zu, errno=%d\n",
-                         chunk, totalChunks, errno);
+              if (udpmod_socket_connected) {
+                // Socket is connected - no need to specify destination
+                msg.msg_name = nullptr;
+                msg.msg_namelen = 0;
+              } else {
+                // Socket not connected - specify destination address
+                msg.msg_name = &udpmod_dest_addr;
+                msg.msg_namelen = sizeof(udpmod_dest_addr);
+              }
+              send_rv = sendmsg(udpmod_fd, &msg, MSG_DONTWAIT);
+
+              if (send_rv < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                  // Socket buffer full, break to receive some responses
+                  break;
+                }
+                perror("UDPmod pipelined send failed");
+                if (!udpmodConfig_.dry_run) {
+                  fcntl(udpmod_fd, F_SETFL, socket_flags); // Restore blocking
                 }
                 return false;
               }
+
+              if (udpmodConfig_.log_packets) {
+                printf("UDPmod PIPELINED: sent chunk %zu/%zu (in_flight=%zu)\n", chunks_sent + 1, totalChunks, in_flight + 1);
+              }
+              chunks_sent++;
+              in_flight++;
+              op.nwritten += send_rv;
+              
+              // Pacing: add delay between sends to match hardware consumption rate
+              // This prevents queue overflow by rate-limiting the send burst
+              if (udpmodConfig_.send_delay_us > 0) {
+                usleep(static_cast<useconds_t>(udpmodConfig_.send_delay_us));
+              }
+              
+              // Quick receive poll after each send to pick up any ready responses
+              // This keeps send/receive truly interleaved
+              if (!udpmodConfig_.dry_run) {
+                while (true) {
+                  socklen_t tmp_len = sizeof(recv_addr);
+                  ssize_t quick_rv = recvfrom(
+                      udpmod_fd,
+                      reinterpret_cast<char*>(recv_buffer.data()),
+                      recv_buffer.size(),
+                      MSG_DONTWAIT,
+                      reinterpret_cast<struct sockaddr*>(&recv_addr),
+                      &tmp_len);
+                  
+                  if (quick_rv < 0) {
+                    break;  // No data ready, continue sending
+                  }
+                  
+                  if (quick_rv >= static_cast<ssize_t>(Pair::kUdpmodMetadataBytes)) {
+                    const auto* hdr = reinterpret_cast<const UDPmodPacketHeader*>(recv_buffer.data());
+                    size_t chunk_idx = static_cast<size_t>(hdr->chunk_index);
+                    if (hdr->current_level == udpmodConfig_.response_level &&
+                        chunk_idx < totalChunks &&
+                        !chunk_received_bitmap[chunk_idx]) {  // Check for duplicate
+                      // Valid, non-duplicate response - copy payload
+                      chunk_received_bitmap[chunk_idx] = true;  // Mark as received
+                      size_t payload_len = static_cast<size_t>(quick_rv - Pair::kUdpmodMetadataBytes);
+                      payload_len = std::min(payload_len, chunkBytes);
+                      uint8_t* dst = static_cast<uint8_t*>(buf->ptr) + chunk_idx * chunkBytes;
+                      memset(dst, 0, chunkBytes);
+                      memcpy(dst, recv_buffer.data() + Pair::kUdpmodMetadataBytes, payload_len);
+                      
+                      if (udpmodConfig_.log_packets) {
+                        printf("UDPmod PIPELINED: received chunk %zu/%zu (total received: %zu)\n",
+                               chunk_idx + 1, totalChunks, chunks_received + 1);
+                      }
+                      chunks_received++;
+                      in_flight = chunks_sent - chunks_received;  // Update in_flight
+                    }
+                  }
+                }
+              }
             }
 
-            if (static_cast<size_t>(myrv) != static_cast<size_t>(packetBytes)) {
-              if (udpmodConfig_.log_packets) {
-                printf("UDPmod: partial write for chunk %zu/%zu: wrote %zd bytes, expected %zu bytes\n",
-                       chunk, totalChunks, myrv, packetBytes);
+            // === 2. RECEIVE: Poll for responses (non-blocking) ===
+            // Skip receive loop in dry_run mode
+            if (udpmodConfig_.dry_run) {
+              break;
+            }
+            
+            while (chunks_received < totalChunks) {
+              memset(&recv_addr, 0, sizeof(recv_addr));
+              recv_addr_len = sizeof(recv_addr);
+
+              ssize_t recv_rv = recvfrom(
+                  udpmod_fd,
+                  reinterpret_cast<char*>(recv_buffer.data()),
+                  recv_buffer.size(),
+                  MSG_DONTWAIT,
+                  reinterpret_cast<struct sockaddr*>(&recv_addr),
+                  &recv_addr_len);
+
+              if (recv_rv < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                  // No data available yet, break to send more or wait
+                  break;
+                }
+                perror("UDPmod pipelined recv failed");
+                if (!udpmodConfig_.dry_run) {
+                  fcntl(udpmod_fd, F_SETFL, socket_flags); // Restore blocking
+                }
+                return false;
               }
-              GLOO_ENFORCE_EQ(
-                  static_cast<size_t>(myrv),
-                  static_cast<size_t>(packetBytes),
-                  "UDPmod partial write");
+
+              if (recv_rv < static_cast<ssize_t>(Pair::kUdpmodMetadataBytes)) {
+                if (udpmodConfig_.log_packets) {
+                  printf("UDPmod PIPELINED: recv too small: %zd\n", recv_rv);
+                }
+                continue;
+              }
+
+              // Parse response header to get chunk_index
+              const auto* resp_header =
+                  reinterpret_cast<const UDPmodPacketHeader*>(recv_buffer.data());
+              size_t chunk_index = static_cast<size_t>(resp_header->chunk_index);
+
+              // Validate chunk_index
+              if (chunk_index >= totalChunks) {
+                if (udpmodConfig_.log_packets) {
+                  printf("UDPmod PIPELINED: invalid chunk_index %zu (max %zu)\n",
+                         chunk_index, totalChunks - 1);
+                }
+                continue;
+              }
+
+              // Validate response level
+              if (resp_header->current_level != udpmodConfig_.response_level) {
+                if (udpmodConfig_.log_packets) {
+                  printf("UDPmod PIPELINED: unexpected level %u (expected %u)\n",
+                         resp_header->current_level, udpmodConfig_.response_level);
+                }
+                continue;
+              }
+
+              // Copy payload to correct position in output buffer
+              size_t payload_bytes = 0;
+              if (recv_rv > static_cast<ssize_t>(Pair::kUdpmodMetadataBytes)) {
+                payload_bytes = static_cast<size_t>(
+                    recv_rv - static_cast<ssize_t>(Pair::kUdpmodMetadataBytes));
+              }
+              payload_bytes = std::min(payload_bytes, chunkBytes);
+
+              uint8_t* dst = static_cast<uint8_t*>(buf->ptr) + chunk_index * chunkBytes;
+              memset(dst, 0, chunkBytes);
+              memcpy(dst, recv_buffer.data() + Pair::kUdpmodMetadataBytes, payload_bytes);
+
+              // Only count this chunk if it's not a duplicate
+              if (!chunk_received_bitmap[chunk_index]) {
+                chunk_received_bitmap[chunk_index] = true;
+                chunks_received++;
+                
+                if (udpmodConfig_.log_packets) {
+                  printf("UDPmod PIPELINED: received chunk %zu/%zu (total received: %zu)\n",
+                         chunk_index + 1, totalChunks, chunks_received);
+                }
+              }
             }
 
-            op.nwritten += myrv;
-            if (udpmodConfig_.log_packets) {
-              printf("UDPmod: sent chunk %zu/%zu, dry_run=%d\n",
-                     chunk, totalChunks, udpmodConfig_.dry_run ? 1 : 0);
+            // If we've sent all chunks but haven't received all responses,
+            // do a short wait to avoid busy-spinning
+            if (chunks_sent >= totalChunks && chunks_received < totalChunks) {
+              // Use select() with a timeout to wait for data
+              // 10ms is long enough for network latency, short enough to not hurt performance
+              fd_set read_fds;
+              FD_ZERO(&read_fds);
+              FD_SET(udpmod_fd, &read_fds);
+              struct timeval tv;
+              tv.tv_sec = 0;
+              tv.tv_usec = 10000; // 10 milliseconds (was 100 microseconds)
+              select(udpmod_fd + 1, &read_fds, nullptr, nullptr, &tv);
             }
-            if (!udpmodConfig_.dry_run) {
-              if (udpmodConfig_.log_packets) {
-                printf("UDPmod: waiting for response for chunk %zu\n", chunk);
-              }
-              readUDPmod(buf, chunkBytes, totalChunks);
-            } else {
-              if (udpmodConfig_.log_packets) {
-                printf("UDPmod: skipping readUDPmod (dry_run mode)\n");
-              }
+          }
+
+          // Restore socket to blocking mode (only if we changed it)
+          if (!udpmodConfig_.dry_run) {
+            if (fcntl(udpmod_fd, F_SETFL, socket_flags) < 0) {
+              perror("UDPmod fcntl restore failed");
             }
+          }
+
+          if (udpmodConfig_.log_packets) {
+            printf("UDPmod PIPELINED: Complete. Sent %zu, Received %zu chunks\n",
+                   chunks_sent, chunks_received);
           }
 
           return true;

@@ -386,6 +386,8 @@ class Pair : public ::gloo::transport::Pair, public Handler {
     uint8_t max_level;
     uint8_t request_level;
     uint8_t response_level;
+    size_t max_in_flight;  // Flow control: max outstanding packets (safety limit)
+    size_t send_delay_us;  // Pacing: microseconds to wait between sends (0 = no delay)
     bool log_packets;
     bool dry_run;
   };
