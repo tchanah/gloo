@@ -152,7 +152,7 @@ class Pair : public ::gloo::transport::Pair, public Handler {
     uint16_t collective_id;
     uint8_t collective_type;
     uint8_t operation;
-    uint8_t reserved0;
+    uint8_t fp_format;    // 0x00=FP32, 0x01=BF16, 0x02=DLFloat
     uint8_t reserved1;
     uint8_t max_level;
     uint8_t current_level;
@@ -383,12 +383,14 @@ class Pair : public ::gloo::transport::Pair, public Handler {
     uint16_t collective_id;
     uint8_t collective_type;
     uint8_t operation;
+    uint8_t fp_format;      // 0x00=FP32, 0x01=BF16, 0x02=DLFloat
     uint8_t max_level;
     uint8_t request_level;
     uint8_t response_level;
     size_t max_in_flight;  // Flow control: max outstanding packets (safety limit)
     size_t send_delay_us;  // Pacing: microseconds to wait between sends (0 = no delay)
     bool log_packets;
+    bool log_timing;  // UDP_MOD_LOG_TIMING=1: log pre-send + post-recv SW overhead per AllReduce
     bool dry_run;
   };
 

@@ -189,6 +189,9 @@ namespace gloo {
             parseEnvU64("UDP_MOD_COLLECTIVE_TYPE", 0x01));
         udpmodConfig_.operation = static_cast<uint8_t>(
             parseEnvU64("UDP_MOD_OPERATION", 0x05));
+        // FP format: 0x00=FP32 (256 elements), 0x01=BF16 (512 elements), 0x02=DLFloat (512 elements)
+        udpmodConfig_.fp_format = static_cast<uint8_t>(
+            parseEnvU64("UDP_MOD_FP_FORMAT", 0x00));
         udpmodConfig_.max_level = static_cast<uint8_t>(
             parseEnvU64("UDP_MOD_MAX_LEVEL", defaultMaxLevel));
         udpmodConfig_.request_level = static_cast<uint8_t>(
@@ -207,6 +210,7 @@ namespace gloo {
         udpmodConfig_.send_delay_us = static_cast<size_t>(
             parseEnvU64("UDP_MOD_SEND_DELAY_US", 0));
         udpmodConfig_.log_packets   = isEnvFlagEnabled("UDP_MOD_LOG_PACKETS");
+        udpmodConfig_.log_timing    = isEnvFlagEnabled("UDP_MOD_LOG_TIMING");
         udpmodConfig_.dry_run       = isEnvFlagEnabled("UDP_MOD_DRY_RUN");
       }
 
@@ -486,7 +490,7 @@ namespace gloo {
         header.collective_id = udpmodConfig_.collective_id;
         header.collective_type = udpmodConfig_.collective_type;
         header.operation = udpmodConfig_.operation;
-        header.reserved0 = 0;
+        header.fp_format = udpmodConfig_.fp_format;
         header.reserved1 = 0;
         header.max_level = udpmodConfig_.max_level;
         header.current_level = udpmodConfig_.request_level;
@@ -682,6 +686,19 @@ namespace gloo {
           const size_t chunkBytes = kUdpmodChunkBytes;
           const size_t totalChunks = (totalBytes + chunkBytes - 1) / chunkBytes;
 
+          // === SW Overhead Timing (T0) ===
+          // T0: AllReduce entry — before any header prep or sends
+          // T1: after first sendmsg() — packet left userspace
+          // T2: after last recvfrom() — last result chunk in userspace
+          // T3: AllReduce completion — after CID increment and cleanup
+          // SW_overhead = (T1-T0) + (T3-T2)  [excludes network transit T1→T2]
+          using ClockT = std::chrono::high_resolution_clock;
+          using NsT = std::chrono::nanoseconds;
+          ClockT::time_point t0, t1, t2, t3;
+          bool t1_captured = false;
+          t0 = ClockT::now();
+          // ================================
+
           if (udpmodConfig_.log_packets) {
             printf("UDPmod: totalBytes=%zu, chunkBytes=%zu, totalChunks=%zu, dry_run=%d\n",
                    totalBytes, chunkBytes, totalChunks, udpmodConfig_.dry_run ? 1 : 0);
@@ -789,6 +806,13 @@ namespace gloo {
                 return false;
               }
 
+              // === SW Timing T1: first sendmsg returned — packet left userspace ===
+              if (!t1_captured) {
+                t1 = ClockT::now();
+                t1_captured = true;
+              }
+              // ==================================================================
+
               if (udpmodConfig_.log_packets) {
                 printf("UDPmod PIPELINED: sent chunk %zu/%zu (in_flight=%zu)\n", chunks_sent + 1, totalChunks, in_flight + 1);
               }
@@ -839,6 +863,9 @@ namespace gloo {
                       }
                       chunks_received++;
                       in_flight = chunks_sent - chunks_received;  // Update in_flight
+                      // === SW Timing T2: track last successful recvfrom ===
+                      t2 = ClockT::now();
+                      // ===================================================
                     }
                   }
                 }
@@ -921,7 +948,9 @@ namespace gloo {
               if (!chunk_received_bitmap[chunk_index]) {
                 chunk_received_bitmap[chunk_index] = true;
                 chunks_received++;
-                
+                // === SW Timing T2: track last successful recvfrom ===
+                t2 = ClockT::now();
+                // ===================================================
                 if (udpmodConfig_.log_packets) {
                   printf("UDPmod PIPELINED: received chunk %zu/%zu (total received: %zu)\n",
                          chunk_index + 1, totalChunks, chunks_received);
@@ -951,9 +980,32 @@ namespace gloo {
             }
           }
 
+          // Auto-increment collective_id for the next AllReduce call.
+          // Hardware drops packets with collective_id < current, so each
+          // AllReduce must use a unique, monotonically increasing ID.
+          // This enables persistent Gloo process groups (no respawn per call).
+          udpmodConfig_.collective_id++;
+
+          // === SW Timing T3: AllReduce complete (after CID increment) ===
+          t3 = ClockT::now();
+          if (udpmodConfig_.log_timing && !udpmodConfig_.dry_run && t1_captured && _env_rank == 0) {
+            int64_t pre_send_ns  = std::chrono::duration_cast<NsT>(t1 - t0).count();
+            int64_t post_recv_ns = std::chrono::duration_cast<NsT>(t3 - t2).count();
+            int64_t sw_total_ns  = pre_send_ns + post_recv_ns;
+            // CSV format for easy parsing: TIMING_LOG,coll_id,pre_send_ns,post_recv_ns,sw_total_ns
+            fprintf(stderr, "TIMING_LOG,%u,%zu,%zu,%ld,%ld,%ld\n",
+                    (unsigned)_env_rank,
+                    totalChunks,
+                    (size_t)(udpmodConfig_.collective_id - 1),  // ID used for this AR
+                    pre_send_ns,
+                    post_recv_ns,
+                    sw_total_ns);
+          }
+          // ==============================================================
+
           if (udpmodConfig_.log_packets) {
-            printf("UDPmod PIPELINED: Complete. Sent %zu, Received %zu chunks\n",
-                   chunks_sent, chunks_received);
+            printf("UDPmod PIPELINED: Complete. Sent %zu, Received %zu chunks (collective_id=0x%04x)\n",
+                   chunks_sent, chunks_received, udpmodConfig_.collective_id);
           }
 
           return true;
